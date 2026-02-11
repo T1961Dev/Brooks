@@ -203,6 +203,7 @@ alter table public.leads
   add column if not exists client_id uuid references public.clients (id) on delete set null,
   add column if not exists job_id uuid references public.lead_jobs (id) on delete set null,
   add column if not exists icp_id uuid references public.icp_profiles (id) on delete set null,
+  add column if not exists industry text,
   add column if not exists verification_status text,
   add column if not exists enriched jsonb default '{}'::jsonb,
   add column if not exists export_status text,

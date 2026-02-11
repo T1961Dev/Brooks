@@ -3,6 +3,10 @@ import { createClient } from "@/lib/supabase/server";
 import { getApifyRunStatus, getApifyDatasetItems } from "@/lib/integrations/apify";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 
+/**
+ * Legacy endpoint — kept for backward compat.
+ * The primary flow now goes through /api/jobs/process.
+ */
 export async function GET(request: NextRequest) {
   const runId = request.nextUrl.searchParams.get("runId");
   if (!runId) {
@@ -10,20 +14,14 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: runRow } = await supabase
-    .from("apify_runs")
-    .select("apify_run_id")
-    .eq("user_id", user.id)
-    .eq("apify_run_id", runId)
-    .single();
-
-  const apifyRunId = runRow?.apify_run_id ?? runId;
-  const status = await getApifyRunStatus(apifyRunId);
+  const status = await getApifyRunStatus(runId);
 
   if (status.status === "SUCCEEDED" && status.datasetId) {
     const admin = createServiceClient(
@@ -31,30 +29,39 @@ export async function GET(request: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
     const items = await getApifyDatasetItems(status.datasetId);
+
     for (const item of items) {
-      const email = (item.email ?? item.Email ?? item.emailAddress)?.toString?.();
+      const email = item.email?.toString()?.trim();
       if (!email) continue;
       await admin.from("leads").upsert(
         {
           user_id: user.id,
           email,
-          first_name: (item.firstName ?? item.first_name)?.toString?.() ?? null,
-          last_name: (item.lastName ?? item.last_name)?.toString?.() ?? null,
-          title: (item.title ?? item.jobTitle)?.toString?.() ?? null,
-          company: (item.company ?? item.companyName)?.toString?.() ?? null,
-          domain: (item.domain ?? item.website)?.toString?.() ?? null,
-          linkedin_url: (item.linkedInUrl ?? item.linkedin_url)?.toString?.() ?? null,
-          location: (item.location ?? item.city)?.toString?.() ?? null,
-          source: { apify_run_id: apifyRunId },
+          first_name: item.first_name ?? null,
+          last_name: item.last_name ?? null,
+          title: item.job_title ?? null,
+          company: item.company_name ?? null,
+          domain: item.company_domain ?? null,
+          linkedin_url: item.linkedin ?? null,
+          industry: item.industry ?? null,
+          location:
+            [item.city, item.state, item.country].filter(Boolean).join(", ") ||
+            null,
+          source: { apify_run_id: runId },
         },
         { onConflict: "user_id,email" }
       );
     }
-    await admin.from("apify_runs").update({ status: "SUCCEEDED", apify_dataset_id: status.datasetId }).eq("user_id", user.id).eq("apify_run_id", apifyRunId);
+
+    await admin
+      .from("apify_runs")
+      .update({ status: "SUCCEEDED", apify_dataset_id: status.datasetId })
+      .eq("user_id", user.id)
+      .eq("apify_run_id", runId);
   }
 
   return NextResponse.json({
-    runId: apifyRunId,
+    runId,
     status: status.status,
     datasetId: status.datasetId,
   });

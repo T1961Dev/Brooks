@@ -19,7 +19,7 @@ export default async function JobsPage() {
     .order("created_at", { ascending: false });
   let jobsQuery = supabase
     .from("lead_jobs")
-    .select("id, status, batch_size, instantly_list_name, progress_step, progress_percent, created_at, client_id, requested_lead_count, actual_lead_count, verification_breakdown, finished_at")
+    .select("id, status, batch_size, instantly_list_name, instantly_campaign_id, progress_step, progress_percent, created_at, client_id, requested_lead_count, actual_lead_count, verification_breakdown, finished_at, error")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(50);

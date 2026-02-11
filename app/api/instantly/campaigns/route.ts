@@ -1,39 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { listCampaigns } from "@/lib/integrations/instantly";
+import {
+  listCampaigns,
+  resolveInstantlyApiKey,
+} from "@/lib/integrations/instantly";
 
+/**
+ * GET /api/instantly/campaigns?clientId=...
+ *
+ * Lists campaigns from the Instantly account linked to this user/client.
+ * Resolves API key: per-client → agency default → INSTANTLY_API_KEY env var.
+ */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!user)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const clientId = request.nextUrl.searchParams.get("clientId");
-  if (!clientId) return NextResponse.json({ error: "clientId required" }, { status: 400 });
+  const clientId =
+    request.nextUrl.searchParams.get("clientId") ?? undefined;
 
-  const { data: clientRow } = await supabase
-    .from("user_integrations")
-    .select("credentials")
-    .eq("user_id", user.id)
-    .eq("provider", "instantly")
-    .eq("client_id", clientId)
-    .single();
-
-  let creds = clientRow?.credentials as { api_key?: string; workspace_id?: string } | undefined;
-  if (!creds?.api_key) {
-    const { data: agencyRow } = await supabase
-      .from("user_integrations")
-      .select("credentials")
-      .eq("user_id", user.id)
-      .eq("provider", "instantly")
-      .is("client_id", null)
-      .single();
-    creds = agencyRow?.credentials as typeof creds;
+  const apiKey = await resolveInstantlyApiKey(supabase, user.id, clientId);
+  if (!apiKey) {
+    return NextResponse.json(
+      {
+        error:
+          "No Instantly API key found. Add your key in Settings → Integrations, or set INSTANTLY_API_KEY in .env",
+      },
+      { status: 400 }
+    );
   }
-  if (!creds?.api_key || !creds?.workspace_id) {
-    return NextResponse.json({ error: "No Instantly credentials. Add in Integrations for this client or agency." }, { status: 400 });
+
+  try {
+    const campaigns = await listCampaigns(apiKey);
+    return NextResponse.json({ campaigns });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        error:
+          err instanceof Error
+            ? err.message
+            : "Failed to fetch Instantly campaigns",
+      },
+      { status: 500 }
+    );
   }
-  const campaigns = await listCampaigns(creds.api_key, creds.workspace_id);
-  return NextResponse.json({ campaigns });
 }

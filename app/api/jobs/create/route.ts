@@ -17,16 +17,15 @@ export async function POST(request: Request) {
   const requestedLeadCount = Number(body.requestedLeadCount ?? body.batchSize ?? 100);
   const leadsPerBatch = Number(body.leadsPerBatch ?? 100);
   const source = (body.source as string | undefined)?.trim() ?? "apify";
-  const instantlyCampaignId = (body.instantlyCampaignId as string | undefined)?.trim();
+  // Instantly campaign is OPTIONAL — user can push to Instantly later
+  const instantlyCampaignId =
+    (body.instantlyCampaignId as string | undefined)?.trim() || null;
 
   if (!icpId) {
     return NextResponse.json({ error: "icpId required" }, { status: 400 });
   }
   if (!clientId) {
     return NextResponse.json({ error: "clientId required" }, { status: 400 });
-  }
-  if (!instantlyCampaignId) {
-    return NextResponse.json({ error: "instantlyCampaignId required" }, { status: 400 });
   }
 
   const { data: icp } = await supabase
@@ -39,7 +38,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ICP not found" }, { status: 404 });
   }
   if (icp.client_id && icp.client_id !== clientId) {
-    return NextResponse.json({ error: "ICP does not match client" }, { status: 400 });
+    return NextResponse.json(
+      { error: "ICP does not match client" },
+      { status: 400 }
+    );
   }
 
   const { data: job, error } = await supabase
@@ -49,7 +51,10 @@ export async function POST(request: Request) {
       client_id: clientId,
       icp_id: icpId,
       status: "queued",
-      batch_size: Number.isFinite(leadsPerBatch) && leadsPerBatch > 0 ? leadsPerBatch : 100,
+      batch_size:
+        Number.isFinite(leadsPerBatch) && leadsPerBatch > 0
+          ? leadsPerBatch
+          : 100,
       requested_lead_count: Math.max(0, requestedLeadCount),
       instantly_campaign_id: instantlyCampaignId,
       progress_step: "scrape",
@@ -60,7 +65,10 @@ export async function POST(request: Request) {
     .single();
 
   if (error || !job) {
-    return NextResponse.json({ error: error?.message ?? "Job create failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: error?.message ?? "Job create failed" },
+      { status: 500 }
+    );
   }
 
   await initJobSteps(supabase, job.id);
