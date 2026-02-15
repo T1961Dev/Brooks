@@ -98,11 +98,19 @@ export async function POST(request: Request) {
       contactLocation = [resolved];
     }
 
-    // Industries → company_keywords
-    const companyKeywords: string[] = [
-      ...(icp.industries ?? []),
-      ...(icp.company_type ? [icp.company_type] : []),
-    ];
+    // ONLY the target industry goes into company_keywords.
+    // Don't mix in company_type or technologies — those pollute the search.
+    const companyKeywords: string[] = [...(icp.industries ?? [])];
+
+    console.log("[Run] ICP filters →", {
+      industries: icp.industries,
+      job_titles: icp.job_titles,
+      geography: icp.geography,
+      headcount: `${icp.headcount_min ?? "any"}-${icp.headcount_max ?? "any"}`,
+      companyKeywords,
+      sizeFilter,
+      contactLocation,
+    });
 
     const fetchCount = job.requested_lead_count ?? job.batch_size ?? 100;
 

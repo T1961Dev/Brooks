@@ -8,7 +8,7 @@ import {
 } from "@/lib/integrations/apify";
 import { setJobStepStatus, updateJob } from "@/lib/jobs/orchestrator";
 import { dedupeLeads } from "@/lib/leads/dedupe";
-import { verifyEmail } from "@/lib/leads/verification";
+import { verifyEmails } from "@/lib/leads/verification";
 import { enrichFromApify } from "@/lib/leads/enrich";
 import {
   pushLeadsToExistingCampaign,
@@ -109,26 +109,29 @@ export async function POST(request: Request) {
   );
   const batch: ApifyDatasetItem[] = items.slice(0, batchSize);
 
-  /* ---- Email Verification (MX + SMTP) ---- */
+  /* ---- Email Verification (MX check — Apify already validated emails) ---- */
   await setJobStepStatus(supabase, jobId, "verify_mx", "running");
   await updateJob(supabase, jobId, {
     progress_step: "verify_mx",
     progress_percent: 40,
   });
 
-  const verificationByEmail = new Map<
-    string,
-    Awaited<ReturnType<typeof verifyEmail>>
-  >();
-  for (const item of batch) {
-    const email = item.email?.toString?.()?.trim();
-    if (!email) continue;
-    verificationByEmail.set(email.toLowerCase(), await verifyEmail(email));
+  // Collect all emails for bulk MX verification
+  const allEmails = batch
+    .map((item) => item.email?.toString?.()?.trim())
+    .filter((e): e is string => !!e);
+
+  // Bulk verify — caches MX lookups per domain, much faster than one-by-one
+  const verificationByEmail = await verifyEmails(allEmails);
+
+  console.log(`[Process] Verified ${verificationByEmail.size} emails`);
+  const statusCounts = { valid: 0, catch_all: 0, invalid: 0, risky: 0 };
+  for (const v of verificationByEmail.values()) {
+    statusCounts[v.status]++;
   }
+  console.log("[Process] Verification breakdown:", statusCounts);
 
   await setJobStepStatus(supabase, jobId, "verify_mx", "succeeded");
-  await setJobStepStatus(supabase, jobId, "verify_smtp", "running");
-  await setJobStepStatus(supabase, jobId, "verify_smtp", "succeeded");
   await updateJob(supabase, jobId, {
     progress_step: "dedupe",
     progress_percent: 50,
