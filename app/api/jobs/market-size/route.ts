@@ -2,6 +2,85 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { headcountToSizeFilter } from "@/lib/integrations/apify";
 
+/**
+ * Estimate the addressable market size for an ICP.
+ *
+ * This uses a realistic model based on known B2B market data:
+ *   - Geography determines the base business pool
+ *   - Industry filters narrow to a fraction of that pool
+ *   - Company size filters narrow further
+ *   - Job titles multiply by contacts per company
+ *
+ * Result is an estimate of how many individual leads (people) match.
+ */
+
+// Approximate total businesses with online presence per country (in thousands)
+const COUNTRY_BUSINESS_POOLS: Record<string, number> = {
+  "united states": 33_000,
+  "canada": 3_800,
+  "united kingdom": 5_500,
+  "germany": 3_700,
+  "france": 4_200,
+  "australia": 2_400,
+  "netherlands": 2_100,
+  "spain": 3_500,
+  "italy": 4_300,
+  global: 120_000,
+};
+
+// What fraction of all businesses a given ICP industry represents
+const INDUSTRY_SHARE: Record<string, number> = {
+  "b2b saas": 0.008,
+  fintech: 0.003,
+  healthcare: 0.06,
+  "e-commerce": 0.04,
+  "professional services": 0.12,
+  manufacturing: 0.05,
+  "real estate": 0.04,
+  education: 0.03,
+  media: 0.015,
+  consulting: 0.06,
+  insurance: 0.02,
+  legal: 0.03,
+  construction: 0.08,
+  transportation: 0.04,
+  retail: 0.08,
+  technology: 0.025,
+  "marketing agency": 0.012,
+  "financial services": 0.04,
+  "non-profit": 0.05,
+};
+
+// What fraction of businesses fall within each headcount bracket
+const SIZE_SHARE: Record<string, number> = {
+  "1-10": 0.65,
+  "11-20": 0.12,
+  "21-50": 0.09,
+  "51-100": 0.05,
+  "101-200": 0.035,
+  "201-500": 0.025,
+  "501-1000": 0.012,
+  "1001-2000": 0.006,
+  "2001-5000": 0.003,
+  "5001-10000": 0.0015,
+  "10001-20000": 0.0006,
+  "20001-50000": 0.0003,
+  "50000+": 0.0001,
+};
+
+// Average matching contacts per company for a given number of job titles selected
+function contactsPerCompany(titleCount: number, companySize: string[]): number {
+  // Tiny companies have fewer people matching any given title
+  const avgBracket = companySize.length > 0 ? companySize[0] : "51-100";
+  const sizeNum = parseInt(avgBracket.split("-")[0] ?? "50");
+
+  if (sizeNum <= 10) return Math.min(titleCount, 1.2);
+  if (sizeNum <= 50) return Math.min(titleCount, 1.8);
+  if (sizeNum <= 200) return Math.min(titleCount * 0.7, 3);
+  if (sizeNum <= 1000) return Math.min(titleCount * 0.8, 5);
+  return Math.min(titleCount * 1.0, 8);
+}
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -28,25 +107,82 @@ export async function GET(request: NextRequest) {
   if (!icp)
     return NextResponse.json({ error: "ICP not found" }, { status: 404 });
 
-  /*
-   * Heuristic estimate based on filter narrowness.
-   * In a future version this could call the Apify actor with fetch_count=0
-   * or a dedicated count endpoint.
-   */
-  const industryCount = (icp.industries ?? []).length || 5;
-  const titleCount = (icp.job_titles ?? []).length || 10;
+  /* ---- Geography → base pool ---- */
+  const geoKey = (icp.geography ?? "global").toLowerCase().trim();
+  const basePool =
+    (COUNTRY_BUSINESS_POOLS[geoKey] ?? COUNTRY_BUSINESS_POOLS["global"]) *
+    1000; // convert from thousands
+
+  /* ---- Industry filter ---- */
+  const industries: string[] = icp.industries ?? [];
+  let industryFraction = 0;
+  if (industries.length === 0) {
+    // No industry filter → entire pool
+    industryFraction = 1;
+  } else {
+    for (const ind of industries) {
+      const key = ind.toLowerCase().trim();
+      industryFraction += INDUSTRY_SHARE[key] ?? 0.02;
+    }
+  }
+
+  const companiesAfterIndustry = Math.round(basePool * industryFraction);
+
+  /* ---- Company size filter ---- */
   const sizeFilter = headcountToSizeFilter(
     icp.headcount_min ?? null,
     icp.headcount_max ?? null
   );
-  const sizeFactor = sizeFilter.length > 0 ? sizeFilter.length : 8;
-  const hasGeo = !!icp.geography;
 
-  // Broader filters → higher estimate
-  let estimate = Math.round(
-    (industryCount * 800 + titleCount * 400) * (sizeFactor / 4) * (hasGeo ? 0.6 : 1)
-  );
-  estimate = Math.min(50000, Math.max(200, estimate));
+  let sizeFraction = 0;
+  if (sizeFilter.length === 0) {
+    sizeFraction = 1;
+  } else {
+    for (const bracket of sizeFilter) {
+      sizeFraction += SIZE_SHARE[bracket] ?? 0.01;
+    }
+  }
 
-  return NextResponse.json({ estimate });
+  const matchingCompanies = Math.round(companiesAfterIndustry * sizeFraction);
+
+  /* ---- Job titles → contacts per company ---- */
+  const titleCount = (icp.job_titles ?? []).length || 1;
+  const cpc = contactsPerCompany(titleCount, sizeFilter);
+  const totalContacts = Math.round(matchingCompanies * cpc);
+
+  // Apify's database has roughly 40-60% coverage of real businesses
+  const apifyCoverage = 0.45;
+  // Email validation pass rate is ~60-80%
+  const validEmailRate = 0.65;
+
+  const estimate = Math.round(totalContacts * apifyCoverage * validEmailRate);
+
+  // No artificial floor — if the estimate is 12, show 12
+  const finalEstimate = Math.max(0, estimate);
+
+  console.log("[MarketSize]", {
+    geography: geoKey,
+    basePool,
+    industries,
+    industryFraction,
+    companiesAfterIndustry,
+    sizeFilter,
+    sizeFraction,
+    matchingCompanies,
+    titleCount,
+    contactsPerCompany: cpc,
+    totalContacts,
+    estimate: finalEstimate,
+  });
+
+  return NextResponse.json({
+    estimate: finalEstimate,
+    breakdown: {
+      geography: icp.geography ?? "Global",
+      matchingCompanies,
+      contactsPerCompany: Math.round(cpc * 10) / 10,
+      totalContacts,
+      withValidEmail: finalEstimate,
+    },
+  });
 }

@@ -459,6 +459,13 @@ export function JobsView({
   const [marketSizeEstimate, setMarketSizeEstimate] = useState<number | null>(
     null
   );
+  const [marketBreakdown, setMarketBreakdown] = useState<{
+    geography: string;
+    matchingCompanies: number;
+    contactsPerCompany: number;
+    totalContacts: number;
+    withValidEmail: number;
+  } | null>(null);
   const [marketSizeChecked, setMarketSizeChecked] = useState(false);
   const [checkingMarket, setCheckingMarket] = useState(false);
 
@@ -637,6 +644,7 @@ export function JobsView({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       setMarketSizeEstimate(data.estimate);
+      setMarketBreakdown(data.breakdown ?? null);
       setMarketSizeChecked(true);
     } finally {
       setCheckingMarket(false);
@@ -733,6 +741,7 @@ export function JobsView({
 
       setMarketSizeChecked(false);
       setMarketSizeEstimate(null);
+      setMarketBreakdown(null);
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to start job"
@@ -860,12 +869,30 @@ export function JobsView({
                 {checkingMarket ? "Checking…" : "Check market size"}
               </Button>
               {marketSizeEstimate != null && (
-                <div className="rounded-lg border border-border bg-muted/50 p-3 text-sm space-y-1">
-                  <p className="font-medium text-foreground">
-                    Addressable market: ~
-                    {marketSizeEstimate.toLocaleString()} leads
-                  </p>
-                  <p className="text-muted-foreground">
+                <div className="rounded-lg border border-border bg-muted/50 p-4 text-sm space-y-3">
+                  <div className="flex items-baseline justify-between">
+                    <p className="font-semibold text-foreground text-base">
+                      ~{marketSizeEstimate.toLocaleString()} leads
+                    </p>
+                    <span className="text-xs text-muted-foreground">estimated</span>
+                  </div>
+
+                  {marketBreakdown && (
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>Geography</span>
+                      <span className="text-foreground">{marketBreakdown.geography}</span>
+                      <span>Matching companies</span>
+                      <span className="text-foreground">~{marketBreakdown.matchingCompanies.toLocaleString()}</span>
+                      <span>Contacts per company</span>
+                      <span className="text-foreground">~{marketBreakdown.contactsPerCompany}</span>
+                      <span>Total contacts</span>
+                      <span className="text-foreground">~{marketBreakdown.totalContacts.toLocaleString()}</span>
+                      <span>With valid email</span>
+                      <span className="text-foreground font-medium">~{marketBreakdown.withValidEmail.toLocaleString()}</span>
+                    </div>
+                  )}
+
+                  <p className="text-muted-foreground text-xs">
                     Requested: {batchSize}.{" "}
                     {Number(batchSize) > marketSizeEstimate
                       ? `Will cap to ${cappedRequest.toLocaleString()}.`
