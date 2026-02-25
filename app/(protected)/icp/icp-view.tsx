@@ -24,7 +24,7 @@ import {
   ICP_JOB_TITLES,
   ICP_INDUSTRIES,
   HEADCOUNT_BRACKETS,
-  REVENUE_BRACKETS,
+  REVENUE_THRESHOLDS,
   GEOGRAPHY_OPTIONS,
   COMPANY_TYPES,
   TECH_OPTIONS,
@@ -36,6 +36,7 @@ type IcpProfile = {
   id: string;
   client_id: string | null;
   name: string;
+  headcount_brackets: string[] | null;
   headcount_min: number | null;
   headcount_max: number | null;
   revenue_min: number | null;
@@ -141,8 +142,9 @@ export function IcpView({
   const [saving, setSaving] = useState(false);
   const clientId = selectedClientId ?? initialClients[0]?.id ?? "";
   const [name, setName] = useState("");
-  const [headcountBracket, setHeadcountBracket] = useState("");
-  const [revenueBracket, setRevenueBracket] = useState("");
+  const [headcountSet, setHeadcountSet] = useState<Set<string>>(new Set());
+  const [revenueMin, setRevenueMin] = useState<string>("");
+  const [revenueMax, setRevenueMax] = useState<string>("");
   const [jobTitleSet, setJobTitleSet] = useState<Set<string>>(new Set());
   const [industrySet, setIndustrySet] = useState<Set<string>>(new Set());
   const [geography, setGeography] = useState("");
@@ -159,8 +161,21 @@ export function IcpView({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    const hb = HEADCOUNT_BRACKETS.find((b) => b.label === headcountBracket);
-    const rb = REVENUE_BRACKETS.find((b) => b.label === revenueBracket);
+    const selectedHeadcounts = HEADCOUNT_BRACKETS.filter((b) =>
+      headcountSet.has(b.label)
+    );
+    const hbMin =
+      selectedHeadcounts.length > 0
+        ? Math.min(...selectedHeadcounts.map((b) => b.min))
+        : null;
+    const hbMax =
+      selectedHeadcounts.length > 0
+        ? selectedHeadcounts.some((b) => b.max == null)
+          ? null
+          : Math.max(...selectedHeadcounts.map((b) => b.max as number))
+        : null;
+    const rbMin = revenueMin ? Number(revenueMin) : null;
+    const rbMax = revenueMax ? Number(revenueMax) : null;
     try {
       const res = await fetch("/api/icp", {
         method: "POST",
@@ -168,10 +183,11 @@ export function IcpView({
         body: JSON.stringify({
           client_id: clientId,
           name,
-          headcount_min: hb?.min ?? null,
-          headcount_max: hb?.max ?? null,
-          revenue_min: rb?.min ?? null,
-          revenue_max: rb?.max ?? null,
+          headcount_brackets: Array.from(headcountSet),
+          headcount_min: hbMin,
+          headcount_max: hbMax,
+          revenue_min: rbMin,
+          revenue_max: rbMax,
           job_titles: Array.from(jobTitleSet),
           industries: Array.from(industrySet),
           geography: geography || null,
@@ -182,8 +198,9 @@ export function IcpView({
       if (!res.ok) throw new Error(await res.text());
       router.refresh();
       setName("");
-      setHeadcountBracket("");
-      setRevenueBracket("");
+      setHeadcountSet(new Set());
+      setRevenueMin("");
+      setRevenueMax("");
       setJobTitleSet(new Set());
       setIndustrySet(new Set());
       setGeography("");
@@ -262,50 +279,58 @@ export function IcpView({
             </div>
 
             {/* Company Size Filters */}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label className="text-sm font-medium flex items-center gap-2">
-                  <Users className="h-4 w-4 text-muted-foreground" />
-                  Headcount
-                </Label>
-                <Select
-                  value={headcountBracket || "_any"}
-                  onValueChange={(v) => setHeadcountBracket(v === "_any" ? "" : v)}
-                >
-                  <SelectTrigger className="h-11 rounded-lg bg-muted/50 border-border">
-                    <SelectValue placeholder="Any size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_any">Any size</SelectItem>
-                    {HEADCOUNT_BRACKETS.map((b) => (
-                      <SelectItem key={b.label} value={b.label}>
-                        {b.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-sm font-medium flex items-center gap-2">
-                  <DollarSign className="h-4 w-4 text-muted-foreground" />
-                  Revenue
-                </Label>
-                <Select
-                  value={revenueBracket || "_any"}
-                  onValueChange={(v) => setRevenueBracket(v === "_any" ? "" : v)}
-                >
-                  <SelectTrigger className="h-11 rounded-lg bg-muted/50 border-border">
-                    <SelectValue placeholder="Any revenue" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_any">Any revenue</SelectItem>
-                    {REVENUE_BRACKETS.map((b) => (
-                      <SelectItem key={b.label} value={b.label}>
-                        {b.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <div className="space-y-3">
+              <ChipSelector
+                label="Headcount"
+                icon={Users}
+                options={HEADCOUNT_BRACKETS.map((b) => b.label)}
+                selected={headcountSet}
+                onToggle={(k) => setHeadcountSet((s) => toggleSet(s, k))}
+                description="Select one or more company size brackets"
+              />
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/50 px-4 py-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                  <DollarSign className="h-4 w-4 text-primary" />
+                </div>
+                <div className="flex-1">
+                  <span className="font-medium text-foreground">Revenue</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">Set min and max annual revenue</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={revenueMin || "_any"}
+                    onValueChange={(v) => setRevenueMin(v === "_any" ? "" : v)}
+                  >
+                    <SelectTrigger className="h-9 w-[110px] rounded-lg bg-card border-border text-sm">
+                      <SelectValue placeholder="Min" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_any">No min</SelectItem>
+                      {REVENUE_THRESHOLDS.map((t) => (
+                        <SelectItem key={`min-${t.value}`} value={String(t.value)}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-muted-foreground">to</span>
+                  <Select
+                    value={revenueMax || "_any"}
+                    onValueChange={(v) => setRevenueMax(v === "_any" ? "" : v)}
+                  >
+                    <SelectTrigger className="h-9 w-[110px] rounded-lg bg-card border-border text-sm">
+                      <SelectValue placeholder="Max" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_any">No max</SelectItem>
+                      {REVENUE_THRESHOLDS.map((t) => (
+                        <SelectItem key={`max-${t.value}`} value={String(t.value)}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
 

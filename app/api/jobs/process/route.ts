@@ -15,6 +15,52 @@ import {
   resolveInstantlyApiKey,
 } from "@/lib/integrations/instantly";
 
+const COUNTRY_ALIASES: Record<string, string> = {
+  usa: "united states",
+  us: "united states",
+  uk: "united kingdom",
+  gb: "united kingdom",
+};
+
+const LEGACY_HEADCOUNT_RANGES: Record<string, { min: number; max: number | null }> = {
+  "1-10": { min: 1, max: 10 },
+  "11-50": { min: 11, max: 50 },
+  "51-200": { min: 51, max: 200 },
+  "201-500": { min: 201, max: 500 },
+  "501-1000": { min: 501, max: 1000 },
+  "1001-5000": { min: 1001, max: 5000 },
+  "5001+": { min: 5001, max: null },
+};
+
+
+function normalizeCountry(value?: string | null): string | null {
+  if (!value) return null;
+  const lower = value.toLowerCase().trim();
+  return COUNTRY_ALIASES[lower] ?? lower;
+}
+
+function parseRevenue(value?: string | null): number | null {
+  if (!value) return null;
+  const text = value.toLowerCase().replace(/,/g, "").trim();
+  const match = text.match(/(\d+(\.\d+)?)(\s*)(k|m|b)?/i);
+  if (!match) return null;
+  const num = Number(match[1]);
+  const suffix = (match[4] ?? "").toLowerCase();
+  if (Number.isNaN(num)) return null;
+  if (suffix === "k") return num * 1_000;
+  if (suffix === "m") return num * 1_000_000;
+  if (suffix === "b") return num * 1_000_000_000;
+  return num;
+}
+
+function inAnyRange(
+  value: number | null,
+  ranges: Array<{ min: number; max: number | null }>
+): boolean {
+  if (value == null) return false;
+  return ranges.some((r) => value >= r.min && (r.max == null || value <= r.max));
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {
@@ -38,6 +84,19 @@ export async function POST(request: Request) {
 
   if (!job)
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
+
+  const { data: icp } = await supabase
+    .from("icp_profiles")
+    .select(
+      "job_titles, industries, geography, headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max"
+    )
+    .eq("id", job.icp_id)
+    .eq("user_id", user.id)
+    .single();
+
+  if (!icp) {
+    return NextResponse.json({ error: "ICP not found for job" }, { status: 404 });
+  }
 
   if (job.status === "succeeded") {
     return NextResponse.json({ job, status: "succeeded" });
@@ -109,6 +168,91 @@ export async function POST(request: Request) {
   );
   const batch: ApifyDatasetItem[] = items.slice(0, batchSize);
 
+  /* ---- Strict ICP matching (favor precision over recall) ---- */
+  const selectedCountries = icp.geography && icp.geography !== "Global"
+    ? [normalizeCountry(icp.geography)]
+    : [];
+  const selectedTitles: string[] = ((icp.job_titles ?? []) as string[]).map((t) =>
+    t.toLowerCase().trim()
+  );
+  const selectedIndustries: string[] = ((icp.industries ?? []) as string[]).map((i) =>
+    i.toLowerCase().trim()
+  );
+  const selectedHeadcountRanges =
+    (icp.headcount_brackets ?? []).length > 0
+      ? (icp.headcount_brackets as string[])
+          .map((b) => LEGACY_HEADCOUNT_RANGES[b])
+          .filter(Boolean)
+      : icp.headcount_min != null || icp.headcount_max != null
+        ? [{ min: icp.headcount_min ?? 0, max: icp.headcount_max ?? null }]
+        : [];
+  const selectedRevenueRanges =
+    icp.revenue_min != null || icp.revenue_max != null
+      ? [{ min: icp.revenue_min ?? 0, max: icp.revenue_max ?? null }]
+      : [];
+
+  const icpMatchedBatch = batch.filter((item) => {
+    const title = (item.job_title ?? "").toString().toLowerCase();
+    const industry = (item.industry ?? "").toString().toLowerCase();
+    const country = normalizeCountry(
+      (item.country ?? item.company_country ?? "").toString()
+    );
+    const companySize =
+      typeof item.company_size === "number"
+        ? item.company_size
+        : item.company_size != null
+          ? Number(item.company_size)
+          : null;
+    const revenue = parseRevenue(
+      (item.company_annual_revenue_clean ?? item.company_annual_revenue ?? "")
+        .toString()
+    );
+
+    const titleMatch =
+      selectedTitles.length === 0 ||
+      selectedTitles.some((t) => title.includes(t) || t.includes(title));
+    const industryMatch =
+      selectedIndustries.length === 0 ||
+      selectedIndustries.some((i) => industry.includes(i) || i.includes(industry));
+    const countryMatch =
+      selectedCountries.length === 0 ||
+      (country != null && selectedCountries.includes(country));
+    const sizeMatch =
+      selectedHeadcountRanges.length === 0 ||
+      inAnyRange(companySize, selectedHeadcountRanges);
+    const revenueMatch =
+      selectedRevenueRanges.length === 0 ||
+      inAnyRange(revenue, selectedRevenueRanges);
+
+    return titleMatch && industryMatch && countryMatch && sizeMatch && revenueMatch;
+  });
+
+  console.log("[Process] ICP strict filter", {
+    before: batch.length,
+    after: icpMatchedBatch.length,
+    dropped: batch.length - icpMatchedBatch.length,
+  });
+
+  const batchForProcessing: ApifyDatasetItem[] = icpMatchedBatch;
+  if (batchForProcessing.length === 0) {
+    await setJobStepStatus(supabase, jobId, "dedupe", "failed", {
+      error: "No leads matched ICP criteria after strict filtering",
+    });
+    await updateJob(supabase, jobId, {
+      status: "failed",
+      error:
+        "No leads matched ICP criteria. Try broadening title/industry/size/revenue filters.",
+      finished_at: new Date().toISOString(),
+    });
+    return NextResponse.json(
+      {
+        error:
+          "No leads matched ICP criteria after strict filtering. Broaden your ICP and retry.",
+      },
+      { status: 422 }
+    );
+  }
+
   /* ---- Email Verification (MX check — Apify already validated emails) ---- */
   await setJobStepStatus(supabase, jobId, "verify_mx", "running");
   await updateJob(supabase, jobId, {
@@ -117,7 +261,7 @@ export async function POST(request: Request) {
   });
 
   // Collect all emails for bulk MX verification
-  const allEmails = batch
+  const allEmails = batchForProcessing
     .map((item) => item.email?.toString?.()?.trim())
     .filter((e): e is string => !!e);
 
@@ -139,7 +283,7 @@ export async function POST(request: Request) {
 
   /* ---- Deduplicate ---- */
   const emails = Array.from(verificationByEmail.keys());
-  const domains = batch
+  const domains = batchForProcessing
     .map(
       (item) =>
         (item.company_domain ?? item.company_website)
@@ -187,7 +331,7 @@ export async function POST(request: Request) {
   await setJobStepStatus(supabase, jobId, "dedupe", "running");
 
   const deduped = dedupeLeads(
-    batch.map((item) => ({
+    batchForProcessing.map((item) => ({
       email: item.email?.toString() ?? null,
       firstName: item.first_name?.toString() ?? null,
       lastName: item.last_name?.toString() ?? null,
@@ -214,7 +358,7 @@ export async function POST(request: Request) {
   /* ---- Enrich ---- */
   await setJobStepStatus(supabase, jobId, "enrich", "running");
   const enriched = deduped.map((lead) => {
-    const item = batch.find(
+    const item = batchForProcessing.find(
       (i) =>
         i.email?.toString()?.toLowerCase() ===
         (lead.email ?? "").toLowerCase()

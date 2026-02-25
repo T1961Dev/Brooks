@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   const { data: icp } = await supabase
     .from("icp_profiles")
     .select(
-      "job_titles, industries, geography, headcount_min, headcount_max, technologies, client_id, company_type, revenue_min, revenue_max"
+      "job_titles, industries, geography, headcount_brackets, headcount_min, headcount_max, technologies, client_id, company_type, revenue_min, revenue_max"
     )
     .eq("id", job.icp_id)
     .eq("user_id", user.id)
@@ -65,11 +65,32 @@ export async function POST(request: Request) {
   try {
     /* ---- Map ICP filters → Apify actor input ---- */
 
-    // Company size → "size" field with correct brackets
-    const sizeFilter = headcountToSizeFilter(
-      icp.headcount_min ?? null,
-      icp.headcount_max ?? null
-    );
+    // Company size → actor "size" field (supports multi-select)
+    const LEGACY_TO_ACTOR: Record<string, string[]> = {
+      "1-10": ["1-10"],
+      "11-50": ["11-20", "21-50"],
+      "51-200": ["51-100", "101-200"],
+      "201-500": ["201-500"],
+      "501-1000": ["501-1000"],
+      "1001-5000": ["1001-2000", "2001-5000"],
+      "5001+": ["5001-10000", "10001-20000", "20001-50000", "50000+"],
+    };
+    const selectedHeadcountBrackets: string[] = (icp.headcount_brackets ?? []).filter(
+      Boolean
+    ) as string[];
+    const sizeFilter: string[] =
+      selectedHeadcountBrackets.length > 0
+        ? Array.from(
+            new Set(
+              selectedHeadcountBrackets.flatMap(
+                (b: string) => LEGACY_TO_ACTOR[b] ?? []
+              )
+            )
+          )
+        : headcountToSizeFilter(
+            icp.headcount_min ?? null,
+            icp.headcount_max ?? null
+          );
 
     // Geography → contact_location (countries, always lowercase)
     // Our GEOGRAPHY_OPTIONS are all countries, so geography always maps to contact_location.

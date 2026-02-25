@@ -133,6 +133,7 @@ function PushToInstantlyForm({
   const [campaignId, setCampaignId] = useState("");
   const [campaignName, setCampaignName] = useState("");
   const [filter, setFilter] = useState("valid_catchall");
+  const [exportMode, setExportMode] = useState("net_new");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
@@ -161,7 +162,7 @@ function PushToInstantlyForm({
   const handlePush = async () => {
     setLoading(true);
     try {
-      const payload: Record<string, string> = { jobId, mode, filter };
+      const payload: Record<string, string> = { jobId, mode, filter, exportMode };
       if (mode === "existing") payload.campaignId = campaignId;
       if (mode === "new") payload.campaignName = campaignName;
 
@@ -270,6 +271,19 @@ function PushToInstantlyForm({
             </SelectItem>
             <SelectItem value="valid">Valid only</SelectItem>
             <SelectItem value="all">All leads</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">Duplicate handling</Label>
+        <Select value={exportMode} onValueChange={setExportMode}>
+          <SelectTrigger className="h-10 rounded-lg bg-muted/50 border-border">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="net_new">Only net new leads</SelectItem>
+            <SelectItem value="all">Push all selected leads</SelectItem>
           </SelectContent>
         </Select>
       </div>

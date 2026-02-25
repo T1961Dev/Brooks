@@ -68,6 +68,24 @@ const SIZE_SHARE: Record<string, number> = {
   "50000+": 0.0001,
 };
 
+const LEGACY_TO_ACTOR: Record<string, string[]> = {
+  "1-10": ["1-10"],
+  "11-50": ["11-20", "21-50"],
+  "51-200": ["51-100", "101-200"],
+  "201-500": ["201-500"],
+  "501-1000": ["501-1000"],
+  "1001-5000": ["1001-2000", "2001-5000"],
+  "5001+": ["5001-10000", "10001-20000", "20001-50000", "50000+"],
+};
+
+const REVENUE_SHARE: Record<string, number> = {
+  "Under $1M": 0.58,
+  "$1M - $10M": 0.28,
+  "$10M - $50M": 0.1,
+  "$50M - $100M": 0.025,
+  "$100M+": 0.015,
+};
+
 // Average matching contacts per company for a given number of job titles selected
 function contactsPerCompany(titleCount: number, companySize: string[]): number {
   // Tiny companies have fewer people matching any given title
@@ -97,7 +115,7 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("icp_profiles")
     .select(
-      "headcount_min, headcount_max, industries, job_titles, geography, company_type, technologies, client_id"
+      "headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max, industries, job_titles, geography, company_type, technologies, client_id"
     )
     .eq("id", icpId)
     .eq("user_id", user.id);
@@ -129,10 +147,19 @@ export async function GET(request: NextRequest) {
   const companiesAfterIndustry = Math.round(basePool * industryFraction);
 
   /* ---- Company size filter ---- */
-  const sizeFilter = headcountToSizeFilter(
-    icp.headcount_min ?? null,
-    icp.headcount_max ?? null
-  );
+  const selectedHeadcountBrackets: string[] = (icp.headcount_brackets ?? []).filter(
+    Boolean
+  ) as string[];
+  const sizeFilter: string[] =
+    selectedHeadcountBrackets.length > 0
+      ? Array.from(
+          new Set(
+            selectedHeadcountBrackets.flatMap(
+              (b: string) => LEGACY_TO_ACTOR[b] ?? []
+            )
+          )
+        )
+      : headcountToSizeFilter(icp.headcount_min ?? null, icp.headcount_max ?? null);
 
   let sizeFraction = 0;
   if (sizeFilter.length === 0) {
@@ -143,7 +170,27 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const matchingCompanies = Math.round(companiesAfterIndustry * sizeFraction);
+  /* ---- Revenue filter ---- */
+  let revenueFraction = 1;
+  if (icp.revenue_min != null || icp.revenue_max != null) {
+    const rMin = icp.revenue_min ?? 0;
+    const rMax = icp.revenue_max ?? Infinity;
+    const revBrackets = [
+      { label: "Under $1M", min: 0, max: 1_000_000 },
+      { label: "$1M - $10M", min: 1_000_000, max: 10_000_000 },
+      { label: "$10M - $50M", min: 10_000_000, max: 50_000_000 },
+      { label: "$50M - $100M", min: 50_000_000, max: 100_000_000 },
+      { label: "$100M+", min: 100_000_000, max: Infinity },
+    ];
+    revenueFraction = revBrackets
+      .filter((b) => b.min < rMax && b.max > rMin)
+      .reduce((sum, b) => sum + (REVENUE_SHARE[b.label] ?? 0.02), 0);
+    if (revenueFraction === 0) revenueFraction = 0.1;
+  }
+
+  const matchingCompanies = Math.round(
+    companiesAfterIndustry * sizeFraction * revenueFraction
+  );
 
   /* ---- Job titles → contacts per company ---- */
   const titleCount = (icp.job_titles ?? []).length || 1;
@@ -168,6 +215,8 @@ export async function GET(request: NextRequest) {
     companiesAfterIndustry,
     sizeFilter,
     sizeFraction,
+    revenueRange: `${icp.revenue_min ?? "any"}-${icp.revenue_max ?? "any"}`,
+    revenueFraction,
     matchingCompanies,
     titleCount,
     contactsPerCompany: cpc,

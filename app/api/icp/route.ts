@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
   const payload = {
     user_id: user.id,
     name,
+    headcount_brackets: body.headcount_brackets ?? [],
     headcount_min: body.headcount_min ?? null,
     headcount_max: body.headcount_max ?? null,
     revenue_min: body.revenue_min ?? null,

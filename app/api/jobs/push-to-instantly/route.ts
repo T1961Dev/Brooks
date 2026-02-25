@@ -20,6 +20,7 @@ import {
  *   campaignId:    string (required if mode === "existing")
  *   campaignName:  string (required if mode === "new")
  *   filter:        "all" | "valid" | "valid_catchall" (optional, default "valid_catchall")
+ *   exportMode:    "all" | "net_new" (optional, default "all")
  */
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -36,6 +37,8 @@ export async function POST(request: Request) {
   const campaignName = (body.campaignName as string | undefined)?.trim();
   const filter =
     (body.filter as string | undefined)?.trim() ?? "valid_catchall";
+  const exportMode =
+    (body.exportMode as string | undefined)?.trim() ?? "all";
 
   if (!jobId)
     return NextResponse.json({ error: "jobId required" }, { status: 400 });
@@ -100,6 +103,10 @@ export async function POST(request: Request) {
     )
     .eq("job_id", jobId)
     .eq("user_id", user.id);
+
+  if (exportMode === "net_new") {
+    leadQuery = leadQuery.or("export_status.is.null,export_status.neq.exported");
+  }
 
   if (filter === "valid") {
     leadQuery = leadQuery.eq("verification_status", "valid");
@@ -182,6 +189,7 @@ export async function POST(request: Request) {
     campaignName: targetCampaignName,
     leadsAdded: added,
     leadsSkipped: skipped,
+    exportMode,
     mode,
   });
 }

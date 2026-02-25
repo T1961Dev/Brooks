@@ -33,6 +33,14 @@ export const REVENUE_BRACKETS = [
   { label: "$100M+", min: 100_000_000, max: null },
 ] as const;
 
+export const REVENUE_THRESHOLDS = [
+  { label: "$0", value: 0 },
+  { label: "$1M", value: 1_000_000 },
+  { label: "$10M", value: 10_000_000 },
+  { label: "$50M", value: 50_000_000 },
+  { label: "$100M", value: 100_000_000 },
+] as const;
+
 export const GEOGRAPHY_OPTIONS = [
   "United States", "Canada", "United Kingdom", "Germany", "France",
   "Australia", "Netherlands", "Spain", "Italy", "Global",
