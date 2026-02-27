@@ -5,8 +5,6 @@ import { ApifyClient } from "apify-client";
 /* -------------------------------------------------------------------------- */
 
 /**
- * Input we build from ICP filters → sent to the Apify actor.
- *
  * Field names match the actor's expected input EXACTLY:
  *   company_keywords  – industry / niche keywords
  *   contact_job_title – job titles to target
@@ -22,23 +20,20 @@ import { ApifyClient } from "apify-client";
 export interface ApifyRunInput {
   company_keywords?: string[];
   contact_job_title?: string[];
-  /** City-level geography — e.g. ["London"]. Never put a country here. */
   contact_city?: string[];
-  /** Country-level geography — e.g. ["united kingdom"]. Never put a city here. */
   contact_location?: string[];
-  /** Company headcount brackets — e.g. ["1-10","11-20","21-50",...] */
   size?: string[];
-  /** Funding round types — e.g. ["seed","series_a",...] */
   funding?: string[];
   email_status?: string[];
   fetch_count?: number;
   file_name?: string;
 }
 
-export interface ApifyStartResult {
+export interface ApifyRunResult {
   runId: string;
   status: string;
-  datasetId?: string;
+  datasetId: string;
+  items: ApifyDatasetItem[];
 }
 
 export interface ApifyRunStatus {
@@ -46,7 +41,6 @@ export interface ApifyRunStatus {
   datasetId?: string;
 }
 
-/** Shape of each item returned by the Apify actor (matches the sample JSON). */
 export interface ApifyDatasetItem {
   first_name?: string | null;
   last_name?: string | null;
@@ -91,14 +85,10 @@ export interface ApifyDatasetItem {
 /*  Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
-// Mocking is OPT-IN: only mock when DEV_MOCK is explicitly "true"
 const DEV_MOCK = process.env.DEV_MOCK === "true";
-
-/** The specific Apify actor for lead scraping. */
 const ACTOR_ID = "IoSHqwTR9YGhzccez";
 
 function getClient(): ApifyClient {
-  // Check both env var names — .env uses APIFY_TOKEN
   const token = process.env.APIFY_TOKEN ?? process.env.APIFY_API_TOKEN;
   if (!token) throw new Error("APIFY_TOKEN env var is required");
   return new ApifyClient({ token });
@@ -106,11 +96,6 @@ function getClient(): ApifyClient {
 
 /**
  * Map a headcount range (min/max) to the exact size brackets the actor expects.
- *
- * Actor size brackets:
- *   "1-10", "11-20", "21-50", "51-100", "101-200", "201-500",
- *   "501-1000", "1001-2000", "2001-5000", "5001-10000",
- *   "10001-20000", "20001-50000", "50000+"
  */
 export function headcountToSizeFilter(
   min?: number | null,
@@ -139,56 +124,152 @@ export function headcountToSizeFilter(
     .map((b) => b.label);
 }
 
+/**
+ * Maps ICP industry names → Apollo/Apify industry field values.
+ * Used for post-scrape filtering since Apify returns standard LinkedIn/Apollo
+ * industry names (e.g. "Computer Software") not our ICP labels ("B2B SaaS").
+ */
+export const INDUSTRY_ALIASES: Record<string, string[]> = {
+  "b2b saas": [
+    "computer software", "saas", "software", "internet",
+    "information technology and services", "information technology & services",
+    "software development", "computer & network security",
+    "computer networking", "cloud computing",
+  ],
+  fintech: [
+    "financial services", "financial technology", "fintech", "banking",
+    "investment management", "capital markets", "payments",
+  ],
+  healthcare: [
+    "hospital & health care", "health, wellness and fitness",
+    "medical devices", "pharmaceuticals", "biotechnology",
+    "mental health care", "health care",
+  ],
+  "e-commerce": [
+    "e-commerce", "ecommerce", "retail", "internet",
+    "consumer goods", "consumer electronics", "online media",
+  ],
+  "professional services": [
+    "professional services", "management consulting", "accounting",
+    "human resources", "staffing and recruiting", "legal services",
+  ],
+  manufacturing: [
+    "manufacturing", "industrial automation", "machinery",
+    "mechanical or industrial engineering",
+    "electrical/electronic manufacturing", "plastics",
+  ],
+  "real estate": [
+    "real estate", "commercial real estate",
+  ],
+  education: [
+    "education", "e-learning", "higher education",
+    "education management", "primary/secondary education",
+  ],
+  media: [
+    "media production", "online media", "broadcast media",
+    "publishing", "entertainment", "music",
+  ],
+  consulting: [
+    "management consulting", "consulting",
+    "information technology and services",
+    "information technology & services", "business consulting",
+  ],
+  insurance: ["insurance", "financial services"],
+  legal: ["legal services", "law practice"],
+  construction: [
+    "construction", "building materials", "civil engineering",
+    "architecture & planning",
+  ],
+  transportation: [
+    "transportation/trucking/railroad", "logistics and supply chain",
+    "aviation & aerospace", "maritime", "transportation",
+  ],
+  retail: [
+    "retail", "consumer goods", "food & beverages",
+    "supermarkets", "apparel & fashion",
+  ],
+  technology: [
+    "information technology and services",
+    "information technology & services",
+    "computer software", "internet", "computer hardware",
+    "semiconductors", "computer networking",
+    "computer & network security", "technology",
+  ],
+  "marketing agency": [
+    "marketing and advertising", "marketing & advertising",
+    "advertising", "public relations and communications",
+    "public relations & communications", "design", "graphic design",
+  ],
+  "financial services": [
+    "financial services", "banking", "investment management",
+    "venture capital & private equity", "capital markets",
+  ],
+  "non-profit": [
+    "nonprofit organization management", "philanthropy",
+    "civic & social organization", "fund-raising",
+  ],
+};
+
 /* -------------------------------------------------------------------------- */
 /*  Public API                                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Start an Apify actor run.
+ * Run the Apify actor and fetch results — mirrors the reference pattern exactly:
  *
- * Uses .call() which runs the actor and waits for it to finish.
- * This means we get the datasetId back immediately in the response.
- *
- * Reference (exact pattern from Apify docs):
  *   const run = await client.actor("IoSHqwTR9YGhzccez").call(input);
  *   const { items } = await client.dataset(run.defaultDatasetId).listItems();
+ *
+ * Returns BOTH run metadata AND the dataset items in one call.
  */
-export async function startApifyRun(
+export async function runActorAndFetchItems(
   input: ApifyRunInput
-): Promise<ApifyStartResult> {
+): Promise<ApifyRunResult> {
   if (DEV_MOCK) {
     return {
       runId: `mock-run-${Date.now()}`,
       status: "SUCCEEDED",
       datasetId: "mock-dataset-id",
+      items: [
+        {
+          first_name: "Jane",
+          last_name: "Doe",
+          email: "jane@example.com",
+          job_title: "CEO",
+          company_name: "Example SaaS Inc",
+          company_domain: "example.com",
+          linkedin: "https://linkedin.com/in/janedoe",
+          city: "San Francisco",
+          country: "United States",
+          industry: "Computer Software",
+          company_size: 35,
+          company_website: "https://example.com",
+          company_annual_revenue: "$15M",
+        },
+      ],
     };
   }
 
   const client = getClient();
 
-  // Build the actor input — always include the base fields
   const actorInput: Record<string, unknown> = {
     fetch_count: input.fetch_count ?? 100,
     file_name: input.file_name ?? "Prospects",
     email_status: input.email_status ?? ["validated"],
   };
 
-  // Add optional ICP filters only if present
   if (input.company_keywords?.length) {
     actorInput.company_keywords = input.company_keywords;
   }
   if (input.contact_job_title?.length) {
     actorInput.contact_job_title = input.contact_job_title;
   }
-  // IMPORTANT: contact_city is for CITIES only, contact_location is for COUNTRIES only
-  // Never put a country into contact_city or a city into contact_location
   if (input.contact_city?.length) {
     actorInput.contact_city = input.contact_city;
   }
   if (input.contact_location?.length) {
     actorInput.contact_location = input.contact_location;
   }
-  // Actor uses "size" for company headcount brackets
   if (input.size?.length) {
     actorInput.size = input.size;
   }
@@ -196,12 +277,9 @@ export async function startApifyRun(
     actorInput.funding = input.funding;
   }
 
-  console.log(
-    "[Apify] Starting actor run with input:",
-    JSON.stringify(actorInput)
-  );
+  console.log("[Apify] Starting actor with input:", JSON.stringify(actorInput));
 
-  // .call() runs the actor and waits for it to finish
+  // Step 1: Run the actor and wait for it to finish
   const run = await client.actor(ACTOR_ID).call(actorInput);
 
   console.log("[Apify] Run completed:", {
@@ -210,10 +288,35 @@ export async function startApifyRun(
     datasetId: run.defaultDatasetId,
   });
 
+  if (!run.defaultDatasetId) {
+    throw new Error(
+      `Apify run ${run.id} completed with status ${run.status} but no datasetId`
+    );
+  }
+
+  // Step 2: Immediately fetch results from the dataset (same pattern as reference)
+  const { items } = await client
+    .dataset(run.defaultDatasetId)
+    .listItems();
+
+  console.log(`[Apify] Fetched ${items.length} items from dataset ${run.defaultDatasetId}`);
+
+  if (items.length > 0) {
+    const sample = items[0] as ApifyDatasetItem;
+    console.log("[Apify] Sample item fields:", {
+      industry: sample.industry,
+      job_title: sample.job_title,
+      company_size: sample.company_size,
+      country: sample.country,
+      company_name: sample.company_name,
+    });
+  }
+
   return {
     runId: run.id,
     status: run.status ?? "SUCCEEDED",
     datasetId: run.defaultDatasetId,
+    items: items as ApifyDatasetItem[],
   };
 }
 
@@ -244,7 +347,7 @@ export async function getApifyRunStatus(
 }
 
 /**
- * Fetch the dataset items from a completed Apify run.
+ * Fetch items from an Apify dataset (for re-fetching in process route).
  */
 export async function getApifyDatasetItems(
   datasetId: string
@@ -255,14 +358,14 @@ export async function getApifyDatasetItems(
         first_name: "Jane",
         last_name: "Doe",
         email: "jane@example.com",
-        job_title: "VP Sales",
-        company_name: "Example Inc",
+        job_title: "CEO",
+        company_name: "Example SaaS Inc",
         company_domain: "example.com",
         linkedin: "https://linkedin.com/in/janedoe",
-        city: "London",
-        country: "United Kingdom",
-        industry: "B2B SaaS",
-        company_size: 50,
+        city: "San Francisco",
+        country: "United States",
+        industry: "Computer Software",
+        company_size: 35,
         company_website: "https://example.com",
       },
     ];

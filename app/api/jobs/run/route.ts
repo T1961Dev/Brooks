@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { startApifyRun, headcountToSizeFilter } from "@/lib/integrations/apify";
+import { runActorAndFetchItems, headcountToSizeFilter } from "@/lib/integrations/apify";
 import { setJobStepStatus, updateJob } from "@/lib/jobs/orchestrator";
 
-export const maxDuration = 300; // Allow up to 5 minutes for Apify .call()
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   const { data: icp } = await supabase
     .from("icp_profiles")
     .select(
-      "job_titles, industries, geography, headcount_brackets, headcount_min, headcount_max, technologies, client_id, company_type, revenue_min, revenue_max"
+      "job_titles, industries, industry_keywords, geography, headcount_brackets, headcount_min, headcount_max, technologies, client_id, company_type, revenue_min, revenue_max"
     )
     .eq("id", job.icp_id)
     .eq("user_id", user.id)
@@ -63,9 +63,8 @@ export async function POST(request: Request) {
   });
 
   try {
-    /* ---- Map ICP filters → Apify actor input ---- */
+    /* ---- Map ICP → actor input ---- */
 
-    // Company size → actor "size" field (supports multi-select)
     const LEGACY_TO_ACTOR: Record<string, string[]> = {
       "1-10": ["1-10"],
       "11-50": ["11-20", "21-50"],
@@ -75,9 +74,9 @@ export async function POST(request: Request) {
       "1001-5000": ["1001-2000", "2001-5000"],
       "5001+": ["5001-10000", "10001-20000", "20001-50000", "50000+"],
     };
-    const selectedHeadcountBrackets: string[] = (icp.headcount_brackets ?? []).filter(
-      Boolean
-    ) as string[];
+    const selectedHeadcountBrackets: string[] = (
+      icp.headcount_brackets ?? []
+    ).filter(Boolean) as string[];
     const sizeFilter: string[] =
       selectedHeadcountBrackets.length > 0
         ? Array.from(
@@ -92,9 +91,6 @@ export async function POST(request: Request) {
             icp.headcount_max ?? null
           );
 
-    // Geography → contact_location (countries, always lowercase)
-    // Our GEOGRAPHY_OPTIONS are all countries, so geography always maps to contact_location.
-    // NEVER put a country into contact_city or a city into contact_location.
     const COUNTRY_ALIASES: Record<string, string> = {
       usa: "united states",
       us: "united states",
@@ -113,21 +109,27 @@ export async function POST(request: Request) {
     let contactCity: string[] | undefined;
 
     if (icp.geography && icp.geography !== "Global") {
-      // Lowercase the value and resolve common abbreviations
       const raw = icp.geography.toLowerCase().trim();
       const resolved = COUNTRY_ALIASES[raw] ?? raw;
       contactLocation = [resolved];
     }
 
-    // ONLY the target industry goes into company_keywords.
-    // Don't mix in company_type or technologies — those pollute the search.
-    const companyKeywords: string[] = [...(icp.industries ?? [])];
+    // Use specific sub-niche keywords when available — these produce far better
+    // results than broad categories like "B2B SaaS". Fall back to industry names
+    // only if the user didn't pick any sub-niches.
+    const industryKeywords: string[] = (icp.industry_keywords ?? []).filter(Boolean) as string[];
+    const companyKeywords: string[] =
+      industryKeywords.length > 0
+        ? industryKeywords
+        : [...(icp.industries ?? [])];
 
     console.log("[Run] ICP filters →", {
       industries: icp.industries,
+      industry_keywords: industryKeywords,
       job_titles: icp.job_titles,
       geography: icp.geography,
-      headcount: `${icp.headcount_min ?? "any"}-${icp.headcount_max ?? "any"}`,
+      headcount_brackets: selectedHeadcountBrackets,
+      revenue: `${icp.revenue_min ?? "any"}-${icp.revenue_max ?? "any"}`,
       companyKeywords,
       sizeFilter,
       contactLocation,
@@ -135,9 +137,8 @@ export async function POST(request: Request) {
 
     const fetchCount = job.requested_lead_count ?? job.batch_size ?? 100;
 
-    // .call() runs the Apify actor and WAITS for it to finish.
-    // When this returns, the dataset is ready to fetch.
-    const result = await startApifyRun({
+    // Run the actor and fetch items in one go (matches reference pattern)
+    const result = await runActorAndFetchItems({
       company_keywords:
         companyKeywords.length > 0 ? companyKeywords : undefined,
       contact_job_title:
@@ -152,11 +153,39 @@ export async function POST(request: Request) {
       file_name: "Prospects",
     });
 
-    // .call() waited for completion — scrape is done, dataset is available
+    if (result.items.length === 0) {
+      await setJobStepStatus(supabase, jobId, "scrape", "failed", {
+        error: "Apify actor returned 0 results for this search criteria",
+      });
+      await updateJob(supabase, jobId, {
+        status: "failed",
+        error:
+          "Apify returned 0 results. The search criteria may be too restrictive, or there are no matches in the database for this combination of keywords, location, size, and titles.",
+        finished_at: new Date().toISOString(),
+      });
+      return NextResponse.json(
+        {
+          error:
+            "Apify returned 0 results for this search criteria. Try broadening your ICP filters.",
+          runId: result.runId,
+          datasetId: result.datasetId,
+        },
+        { status: 422 }
+      );
+    }
+
+    // Log industry distribution from results for debugging
+    const industryDist: Record<string, number> = {};
+    for (const item of result.items.slice(0, 200)) {
+      const ind = (item.industry ?? "unknown").toString();
+      industryDist[ind] = (industryDist[ind] ?? 0) + 1;
+    }
+    console.log("[Run] Industry distribution from actor:", industryDist);
+
     await setJobStepStatus(supabase, jobId, "scrape", "succeeded");
     await updateJob(supabase, jobId, {
       apify_run_id: result.runId,
-      apify_dataset_id: result.datasetId ?? null,
+      apify_dataset_id: result.datasetId,
       status: "running",
       progress_step: "scrape",
       progress_percent: 35,
@@ -166,6 +195,7 @@ export async function POST(request: Request) {
       runId: result.runId,
       status: result.status,
       datasetId: result.datasetId,
+      itemCount: result.items.length,
       scrapeComplete: true,
     });
   } catch (err) {

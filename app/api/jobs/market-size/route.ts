@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("icp_profiles")
     .select(
-      "headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max, industries, job_titles, geography, company_type, technologies, client_id"
+      "headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max, industries, industry_keywords, job_titles, geography, company_type, technologies, client_id"
     )
     .eq("id", icpId)
     .eq("user_id", user.id);

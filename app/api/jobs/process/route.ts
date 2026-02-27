@@ -4,6 +4,7 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 import {
   getApifyRunStatus,
   getApifyDatasetItems,
+  INDUSTRY_ALIASES,
   type ApifyDatasetItem,
 } from "@/lib/integrations/apify";
 import { setJobStepStatus, updateJob } from "@/lib/jobs/orchestrator";
@@ -88,7 +89,7 @@ export async function POST(request: Request) {
   const { data: icp } = await supabase
     .from("icp_profiles")
     .select(
-      "job_titles, industries, geography, headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max"
+      "job_titles, industries, industry_keywords, geography, headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max"
     )
     .eq("id", job.icp_id)
     .eq("user_id", user.id)
@@ -168,7 +169,23 @@ export async function POST(request: Request) {
   );
   const batch: ApifyDatasetItem[] = items.slice(0, batchSize);
 
-  /* ---- Strict ICP matching (favor precision over recall) ---- */
+  /* ---- Handle empty datasets ---- */
+  if (items.length === 0) {
+    await setJobStepStatus(supabase, jobId, "scrape", "failed", {
+      error: "Apify returned 0 items in dataset",
+    });
+    await updateJob(supabase, jobId, {
+      status: "failed",
+      error: "Apify returned 0 results. Try broadening your ICP search criteria.",
+      finished_at: new Date().toISOString(),
+    });
+    return NextResponse.json(
+      { error: "Apify returned 0 results for this search." },
+      { status: 422 }
+    );
+  }
+
+  /* ---- ICP matching with industry alias resolution ---- */
   const selectedCountries = icp.geography && icp.geography !== "Global"
     ? [normalizeCountry(icp.geography)]
     : [];
@@ -178,6 +195,17 @@ export async function POST(request: Request) {
   const selectedIndustries: string[] = ((icp.industries ?? []) as string[]).map((i) =>
     i.toLowerCase().trim()
   );
+
+  // Build expanded set of acceptable industry values from aliases
+  const acceptableIndustries = new Set<string>();
+  for (const icpInd of selectedIndustries) {
+    acceptableIndustries.add(icpInd);
+    const aliases = INDUSTRY_ALIASES[icpInd] ?? [];
+    for (const alias of aliases) {
+      acceptableIndustries.add(alias.toLowerCase());
+    }
+  }
+
   const selectedHeadcountRanges =
     (icp.headcount_brackets ?? []).length > 0
       ? (icp.headcount_brackets as string[])
@@ -191,9 +219,20 @@ export async function POST(request: Request) {
       ? [{ min: icp.revenue_min ?? 0, max: icp.revenue_max ?? null }]
       : [];
 
+  console.log("[Process] Filter config:", {
+    selectedTitles,
+    selectedIndustries,
+    acceptableIndustries: Array.from(acceptableIndustries).slice(0, 10),
+    selectedCountries,
+    headcountRanges: selectedHeadcountRanges,
+    revenueRanges: selectedRevenueRanges,
+  });
+
+  const filterReasons = { title: 0, industry: 0, country: 0, size: 0, revenue: 0 };
+
   const icpMatchedBatch = batch.filter((item) => {
-    const title = (item.job_title ?? "").toString().toLowerCase();
-    const industry = (item.industry ?? "").toString().toLowerCase();
+    const title = (item.job_title ?? "").toString().toLowerCase().trim();
+    const industry = (item.industry ?? "").toString().toLowerCase().trim();
     const country = normalizeCountry(
       (item.country ?? item.company_country ?? "").toString()
     );
@@ -208,49 +247,92 @@ export async function POST(request: Request) {
         .toString()
     );
 
+    // Title: check if any selected title is a substring of the lead's title or vice versa
     const titleMatch =
       selectedTitles.length === 0 ||
       selectedTitles.some((t) => title.includes(t) || t.includes(title));
-    const industryMatch =
-      selectedIndustries.length === 0 ||
-      selectedIndustries.some((i) => industry.includes(i) || i.includes(industry));
+
+    // Industry: use alias-expanded set. Reject leads with missing industry data.
+    let industryMatch: boolean;
+    if (selectedIndustries.length === 0) {
+      industryMatch = true;
+    } else if (!industry) {
+      industryMatch = false;
+    } else {
+      industryMatch = Array.from(acceptableIndustries).some(
+        (acceptable) =>
+          industry.includes(acceptable) || acceptable.includes(industry)
+      );
+    }
+
     const countryMatch =
       selectedCountries.length === 0 ||
-      (country != null && selectedCountries.includes(country));
+      (country != null && country.length > 0 && selectedCountries.includes(country));
     const sizeMatch =
       selectedHeadcountRanges.length === 0 ||
       inAnyRange(companySize, selectedHeadcountRanges);
+
+    // Revenue: if the lead has no revenue data, let it through (don't punish missing data)
     const revenueMatch =
       selectedRevenueRanges.length === 0 ||
+      revenue == null ||
       inAnyRange(revenue, selectedRevenueRanges);
+
+    if (!titleMatch) filterReasons.title++;
+    if (!industryMatch) filterReasons.industry++;
+    if (!countryMatch) filterReasons.country++;
+    if (!sizeMatch) filterReasons.size++;
+    if (!revenueMatch) filterReasons.revenue++;
 
     return titleMatch && industryMatch && countryMatch && sizeMatch && revenueMatch;
   });
 
-  console.log("[Process] ICP strict filter", {
+  console.log("[Process] ICP filter result:", {
     before: batch.length,
     after: icpMatchedBatch.length,
     dropped: batch.length - icpMatchedBatch.length,
+    reasons: filterReasons,
   });
+
+  // Log sample of what passed and what didn't for debugging
+  if (icpMatchedBatch.length > 0) {
+    const s = icpMatchedBatch[0];
+    console.log("[Process] Sample PASSED:", {
+      company: s.company_name,
+      industry: s.industry,
+      title: s.job_title,
+      size: s.company_size,
+      country: s.country,
+    });
+  }
+  const firstDropped = batch.find((item) => !icpMatchedBatch.includes(item));
+  if (firstDropped) {
+    console.log("[Process] Sample DROPPED:", {
+      company: firstDropped.company_name,
+      industry: firstDropped.industry,
+      title: firstDropped.job_title,
+      size: firstDropped.company_size,
+      country: firstDropped.country,
+    });
+  }
 
   const batchForProcessing: ApifyDatasetItem[] = icpMatchedBatch;
   if (batchForProcessing.length === 0) {
+    const topReasons = Object.entries(filterReasons)
+      .filter(([, count]) => count > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([reason, count]) => `${reason}: ${count} dropped`)
+      .join(", ");
+    const errorMsg = `All ${batch.length} scraped leads were filtered out by ICP matching. Breakdown: ${topReasons}. Try broadening your filters.`;
     await setJobStepStatus(supabase, jobId, "dedupe", "failed", {
-      error: "No leads matched ICP criteria after strict filtering",
+      error: errorMsg,
     });
     await updateJob(supabase, jobId, {
       status: "failed",
-      error:
-        "No leads matched ICP criteria. Try broadening title/industry/size/revenue filters.",
+      error: errorMsg,
       finished_at: new Date().toISOString(),
     });
-    return NextResponse.json(
-      {
-        error:
-          "No leads matched ICP criteria after strict filtering. Broaden your ICP and retry.",
-      },
-      { status: 422 }
-    );
+    return NextResponse.json({ error: errorMsg }, { status: 422 });
   }
 
   /* ---- Email Verification (MX check — Apify already validated emails) ---- */

@@ -41,6 +41,111 @@ export const REVENUE_THRESHOLDS = [
   { label: "$100M", value: 100_000_000 },
 ] as const;
 
+/**
+ * Sub-niches for each top-level industry. These become the actual
+ * `company_keywords` sent to the Apify actor — much more specific than
+ * the parent industry name (e.g. "CRM software" vs "B2B SaaS").
+ */
+export const INDUSTRY_SUB_NICHES: Record<string, readonly string[]> = {
+  "B2B SaaS": [
+    "CRM Software", "HR Software / HRIS", "Project Management Software",
+    "Cybersecurity Platform", "Marketing Automation", "Sales Enablement",
+    "Accounting Software", "Customer Support Software", "Analytics / BI Platform",
+    "DevOps / Developer Tools", "Supply Chain Software", "ERP Software",
+    "Communication / Collaboration", "E-learning Platform", "Compliance Software",
+    "Data Integration", "Cloud Infrastructure", "Workflow Automation",
+    "Recruiting Software / ATS", "Vertical SaaS",
+  ],
+  Fintech: [
+    "Payments / Payment Processing", "Lending Platform", "Insurtech",
+    "Regtech / Compliance", "Wealth Management", "Crypto / Blockchain",
+    "Banking Software", "Financial Planning", "Invoice / Billing Platform",
+    "Expense Management", "Neobank", "Trading Platform",
+  ],
+  Healthcare: [
+    "Healthtech / Digital Health", "Telemedicine", "Medical Devices",
+    "Pharma", "Biotech", "Health Insurance", "Mental Health Platform",
+    "EHR / EMR Systems", "Clinical Trials", "Wellness Platform",
+    "Home Health", "Health Analytics",
+  ],
+  "E-commerce": [
+    "Online Retail", "Marketplace", "D2C Brand", "Subscription Commerce",
+    "Social Commerce", "Fulfillment / Logistics", "E-commerce Platform",
+    "Dropshipping", "Fashion / Apparel E-commerce", "Food / Grocery Delivery",
+  ],
+  "Professional Services": [
+    "Management Consulting", "Accounting Firm", "Law Firm",
+    "Staffing / Recruiting Agency", "Engineering Consulting",
+    "IT Consulting", "Strategy Consulting", "Outsourcing / BPO",
+  ],
+  Manufacturing: [
+    "Industrial Manufacturing", "Automotive", "Aerospace",
+    "Electronics Manufacturing", "Food Manufacturing", "Chemical Manufacturing",
+    "3D Printing / Additive", "Packaging", "Textile Manufacturing",
+  ],
+  "Real Estate": [
+    "Commercial Real Estate", "Residential Real Estate", "PropTech",
+    "Real Estate Investment / REIT", "Property Management",
+    "Real Estate Brokerage", "Construction Development",
+  ],
+  Education: [
+    "EdTech", "Online Learning Platform", "K-12", "Higher Education",
+    "Corporate Training", "Language Learning", "Test Prep",
+    "LMS Platform", "Tutoring",
+  ],
+  Media: [
+    "Digital Media", "Publishing", "Streaming", "Podcast",
+    "Content Production", "News Media", "Gaming", "Film / Video",
+  ],
+  Consulting: [
+    "Management Consulting", "IT Consulting", "Strategy Consulting",
+    "HR Consulting", "Marketing Consulting", "Financial Consulting",
+    "Operations Consulting", "Digital Transformation",
+  ],
+  Insurance: [
+    "Insurtech", "Life Insurance", "Health Insurance",
+    "Commercial Insurance", "Reinsurance", "Insurance Brokerage",
+  ],
+  Legal: [
+    "Legal Tech", "Law Firm", "Corporate Legal", "IP Law",
+    "Compliance / Regulatory", "Legal Services",
+  ],
+  Construction: [
+    "Construction Technology", "General Contracting", "Architecture",
+    "Civil Engineering", "Building Materials", "MEP Engineering",
+  ],
+  Transportation: [
+    "Logistics / Freight", "Fleet Management", "Last-mile Delivery",
+    "Ride-sharing", "Shipping / Maritime", "Autonomous Vehicles",
+    "Supply Chain Management",
+  ],
+  Retail: [
+    "Brick-and-mortar Retail", "Grocery", "Fashion / Apparel",
+    "Consumer Electronics", "Luxury Goods", "Convenience Stores",
+    "Retail Technology",
+  ],
+  Technology: [
+    "Cloud Computing", "AI / Machine Learning", "IoT",
+    "Blockchain", "AR / VR", "Robotics", "Semiconductor",
+    "Data Infrastructure", "Edge Computing", "Quantum Computing",
+  ],
+  "Marketing Agency": [
+    "Digital Marketing Agency", "SEO Agency", "PPC Agency",
+    "Social Media Agency", "Content Agency", "PR Agency",
+    "Branding Agency", "Performance Marketing", "Creative Agency",
+  ],
+  "Financial Services": [
+    "Investment Banking", "Asset Management", "Private Equity",
+    "Venture Capital", "Commercial Banking", "Financial Advisory",
+    "Hedge Fund", "Credit Union",
+  ],
+  "Non-profit": [
+    "Charitable Foundation", "NGO", "Social Enterprise",
+    "Environmental Non-profit", "Education Non-profit",
+    "Healthcare Non-profit", "Advocacy / Policy",
+  ],
+};
+
 export const GEOGRAPHY_OPTIONS = [
   "United States", "Canada", "United Kingdom", "Germany", "France",
   "Australia", "Netherlands", "Spain", "Italy", "Global",

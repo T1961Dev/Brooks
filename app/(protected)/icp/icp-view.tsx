@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,8 +28,12 @@ import {
   GEOGRAPHY_OPTIONS,
   COMPANY_TYPES,
   TECH_OPTIONS,
+  INDUSTRY_SUB_NICHES,
 } from "@/lib/icp-options";
-import { ChevronDown, X, Users, Building2, MapPin, Briefcase, DollarSign, Cpu, Target } from "lucide-react";
+import {
+  ChevronDown, X, Users, Building2, MapPin, Briefcase,
+  DollarSign, Cpu, Target, Crosshair, Plus, AlertCircle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type IcpProfile = {
@@ -43,6 +47,7 @@ type IcpProfile = {
   revenue_max: number | null;
   job_titles: string[] | null;
   industries: string[] | null;
+  industry_keywords: string[] | null;
   geography: string | null;
   company_type: string | null;
   technologies: string[] | null;
@@ -147,6 +152,8 @@ export function IcpView({
   const [revenueMax, setRevenueMax] = useState<string>("");
   const [jobTitleSet, setJobTitleSet] = useState<Set<string>>(new Set());
   const [industrySet, setIndustrySet] = useState<Set<string>>(new Set());
+  const [industryKeywordSet, setIndustryKeywordSet] = useState<Set<string>>(new Set());
+  const [customKeyword, setCustomKeyword] = useState("");
   const [geography, setGeography] = useState("");
   const [companyType, setCompanyType] = useState("");
   const [techSet, setTechSet] = useState<Set<string>>(new Set());
@@ -156,6 +163,43 @@ export function IcpView({
     if (next.has(key)) next.delete(key);
     else next.add(key);
     return next;
+  };
+
+  // Compute available sub-niches based on selected industries
+  const availableSubNiches = useMemo(() => {
+    const niches: string[] = [];
+    for (const ind of industrySet) {
+      const subs = INDUSTRY_SUB_NICHES[ind];
+      if (subs) niches.push(...subs);
+    }
+    return [...new Set(niches)];
+  }, [industrySet]);
+
+  // When an industry is deselected, remove its sub-niches from keywords
+  const handleIndustryToggle = (key: string) => {
+    setIndustrySet((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+        // Remove sub-niches belonging to the deselected industry
+        const removedNiches = new Set(INDUSTRY_SUB_NICHES[key] ?? []);
+        setIndustryKeywordSet((kwSet) => {
+          const nextKw = new Set(kwSet);
+          for (const n of removedNiches) nextKw.delete(n);
+          return nextKw;
+        });
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const addCustomKeyword = () => {
+    const trimmed = customKeyword.trim();
+    if (!trimmed) return;
+    setIndustryKeywordSet((s) => new Set(s).add(trimmed));
+    setCustomKeyword("");
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -190,6 +234,7 @@ export function IcpView({
           revenue_max: rbMax,
           job_titles: Array.from(jobTitleSet),
           industries: Array.from(industrySet),
+          industry_keywords: Array.from(industryKeywordSet),
           geography: geography || null,
           company_type: companyType || null,
           technologies: Array.from(techSet),
@@ -203,6 +248,8 @@ export function IcpView({
       setRevenueMax("");
       setJobTitleSet(new Set());
       setIndustrySet(new Set());
+      setIndustryKeywordSet(new Set());
+      setCustomKeyword("");
       setGeography("");
       setCompanyType("");
       setTechSet(new Set());
@@ -398,9 +445,132 @@ export function IcpView({
                 icon={Building2}
                 options={ICP_INDUSTRIES}
                 selected={industrySet}
-                onToggle={(k) => setIndustrySet((s) => toggleSet(s, k))}
-                description="Filter by company industry"
+                onToggle={handleIndustryToggle}
+                description="Select broad industry categories"
               />
+
+              {/* Sub-niche keyword picker — appears when industries are selected */}
+              {industrySet.size > 0 && (
+                <div className="ml-4 space-y-3 border-l-2 border-primary/20 pl-4">
+                  <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 p-3">
+                    <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                    <p className="text-xs text-amber-200/80">
+                      <strong>Important:</strong> Select specific sub-niches below to get accurate results.
+                      Broad categories like &quot;B2B SaaS&quot; will return many irrelevant companies.
+                      The more specific you are, the better your leads.
+                    </p>
+                  </div>
+
+                  <Collapsible defaultOpen>
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-left transition-colors hover:bg-primary/10"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/20">
+                            <Crosshair className="h-4 w-4 text-primary" />
+                          </div>
+                          <div>
+                            <span className="font-medium text-foreground">
+                              Industry Sub-niches
+                            </span>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              These keywords are sent to the lead scraper for precise targeting
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {industryKeywordSet.size > 0 && (
+                            <Badge variant="secondary" className="bg-primary/10 text-primary border-0">
+                              {industryKeywordSet.size} selected
+                            </Badge>
+                          )}
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3 space-y-3">
+                      {/* Suggested sub-niches */}
+                      <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card p-4">
+                        {availableSubNiches.map((niche) => {
+                          const isSelected = industryKeywordSet.has(niche);
+                          return (
+                            <button
+                              key={niche}
+                              type="button"
+                              onClick={() =>
+                                setIndustryKeywordSet((s) => toggleSet(s, niche))
+                              }
+                              className={cn(
+                                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-all",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                              )}
+                            >
+                              {niche}
+                              {isSelected && <X className="h-3 w-3" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Custom keyword input */}
+                      <div className="flex gap-2">
+                        <Input
+                          value={customKeyword}
+                          onChange={(e) => setCustomKeyword(e.target.value)}
+                          placeholder="Add a custom keyword, e.g. 'AI-powered CRM'"
+                          className="h-9 rounded-lg bg-muted/50 border-border text-sm flex-1"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              addCustomKeyword();
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 px-3"
+                          onClick={addCustomKeyword}
+                          disabled={!customKeyword.trim()}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+
+                      {/* Show custom keywords that aren't from suggestions */}
+                      {Array.from(industryKeywordSet).filter(
+                        (k) => !availableSubNiches.includes(k)
+                      ).length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="text-xs text-muted-foreground self-center">
+                            Custom:
+                          </span>
+                          {Array.from(industryKeywordSet)
+                            .filter((k) => !availableSubNiches.includes(k))
+                            .map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() =>
+                                  setIndustryKeywordSet((s) => toggleSet(s, k))
+                                }
+                                className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-sm font-medium shadow-sm"
+                              >
+                                {k}
+                                <X className="h-3 w-3" />
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </CollapsibleContent>
+                  </Collapsible>
+                </div>
+              )}
 
               <ChipSelector
                 label="Technologies"
@@ -422,7 +592,7 @@ export function IcpView({
                 disabled={saving || !clientId || !name.trim()}
                 className="rounded-lg px-6"
               >
-                {saving ? "Saving…" : "Save ICP"}
+                {saving ? "Saving..." : "Save ICP"}
               </Button>
             </div>
           </form>

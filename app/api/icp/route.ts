@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
     revenue_max: body.revenue_max ?? null,
     job_titles: body.job_titles ?? [],
     industries: body.industries ?? [],
+    industry_keywords: body.industry_keywords ?? [],
     geography: body.geography ?? null,
     company_type: body.company_type ?? null,
     technologies: body.technologies ?? [],

@@ -10,6 +10,7 @@ export type IcpForSummary = {
   revenue_max: number | null;
   job_titles: string[] | null;
   industries: string[] | null;
+  industry_keywords?: string[] | null;
   geography: string | null;
   company_type: string | null;
   technologies: string[] | null;
@@ -30,6 +31,7 @@ export function formatIcpSummary(
   if (clientName) parts.push(`Client: ${clientName}`);
   if (icp.job_titles?.length) parts.push(`Titles: ${icp.job_titles.join(", ")}`);
   if (icp.industries?.length) parts.push(`Industries: ${icp.industries.join(", ")}`);
+  if (icp.industry_keywords?.length) parts.push(`Keywords: ${icp.industry_keywords.join(", ")}`);
   if (icp.headcount_brackets?.length) {
     parts.push(`Headcount: ${icp.headcount_brackets.join(", ")}`);
   } else if (icp.headcount_min != null || icp.headcount_max != null) {
