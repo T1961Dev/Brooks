@@ -9,10 +9,25 @@ export const ICP_JOB_TITLES = [
 ] as const;
 
 export const ICP_INDUSTRIES = [
-  "B2B SaaS", "Fintech", "Healthcare", "E-commerce", "Professional Services",
-  "Manufacturing", "Real Estate", "Education", "Media", "Consulting",
-  "Insurance", "Legal", "Construction", "Transportation", "Retail",
-  "Technology", "Marketing Agency", "Financial Services", "Non-profit",
+  "Information Technology & Services",
+  "Construction",
+  "Marketing & Advertising",
+  "Real Estate",
+  "Health, Wellness & Fitness",
+  "Management Consulting",
+  "Computer Software",
+  "Internet",
+  "Retail",
+  "Financial Services",
+  "Consumer Services",
+  "Hospital & Health Care",
+  "Automotive",
+  "Restaurants",
+  "Education Management",
+  "Food & Beverages",
+  "Design",
+  "Hospitality",
+  "Accounting",
 ] as const;
 
 export const HEADCOUNT_BRACKETS = [
@@ -152,7 +167,7 @@ export const GEOGRAPHY_OPTIONS = [
 ] as const;
 
 export const COMPANY_TYPES = [
-  "B2B", "B2C", "SaaS", "Agency", "Enterprise", "SMB", "Startup",
+  "Product", "Services", "Solutions",
 ] as const;
 
 export const TECH_OPTIONS = [

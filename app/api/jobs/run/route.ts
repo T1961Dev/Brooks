@@ -1,9 +1,31 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { runActorAndFetchItems, headcountToSizeFilter } from "@/lib/integrations/apify";
+import {
+  runActorAndFetchItems,
+} from "@/lib/integrations/apify";
+import {
+  buildLegacyActorInput,
+  type LegacyActorOverrides,
+  validateLegacyActorInput,
+} from "@/lib/integrations/apify-mapping";
 import { setJobStepStatus, updateJob } from "@/lib/jobs/orchestrator";
 
 export const maxDuration = 300;
+
+function serializeError(err: unknown) {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      cause: err.cause,
+    };
+  }
+  return {
+    message: "Unknown non-Error thrown",
+    value: err,
+  };
+}
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -16,6 +38,8 @@ export async function POST(request: Request) {
 
   const body = await request.json();
   const jobId = (body.jobId as string | undefined)?.trim();
+  const runCity = (body.city as string | undefined)?.trim() || null;
+  const actorFilters = (body.actorFilters as LegacyActorOverrides | undefined) ?? {};
   if (!jobId)
     return NextResponse.json({ error: "jobId required" }, { status: 400 });
 
@@ -53,105 +77,51 @@ export async function POST(request: Request) {
     );
   }
 
-  /* ---- Mark scrape step running ---- */
-  await setJobStepStatus(supabase, jobId, "scrape", "running");
-  await updateJob(supabase, jobId, {
-    status: "running",
-    progress_step: "scrape",
-    progress_percent: 5,
-    started_at: new Date().toISOString(),
-  });
-
   try {
     /* ---- Map ICP → actor input ---- */
-
-    const LEGACY_TO_ACTOR: Record<string, string[]> = {
-      "1-10": ["1-10"],
-      "11-50": ["11-20", "21-50"],
-      "51-200": ["51-100", "101-200"],
-      "201-500": ["201-500"],
-      "501-1000": ["501-1000"],
-      "1001-5000": ["1001-2000", "2001-5000"],
-      "5001+": ["5001-10000", "10001-20000", "20001-50000", "50000+"],
-    };
-    const selectedHeadcountBrackets: string[] = (
-      icp.headcount_brackets ?? []
-    ).filter(Boolean) as string[];
-    const sizeFilter: string[] =
-      selectedHeadcountBrackets.length > 0
-        ? Array.from(
-            new Set(
-              selectedHeadcountBrackets.flatMap(
-                (b: string) => LEGACY_TO_ACTOR[b] ?? []
-              )
-            )
-          )
-        : headcountToSizeFilter(
-            icp.headcount_min ?? null,
-            icp.headcount_max ?? null
-          );
-
-    const COUNTRY_ALIASES: Record<string, string> = {
-      usa: "united states",
-      us: "united states",
-      uk: "united kingdom",
-      gb: "united kingdom",
-      de: "germany",
-      fr: "france",
-      au: "australia",
-      nl: "netherlands",
-      es: "spain",
-      it: "italy",
-      ca: "canada",
-    };
-
-    let contactLocation: string[] | undefined;
-    let contactCity: string[] | undefined;
-
-    if (icp.geography && icp.geography !== "Global") {
-      const raw = icp.geography.toLowerCase().trim();
-      const resolved = COUNTRY_ALIASES[raw] ?? raw;
-      contactLocation = [resolved];
+    const fetchCount = job.requested_lead_count ?? job.batch_size ?? 100;
+    const actorInput = buildLegacyActorInput(icp, fetchCount, {
+      ...actorFilters,
+      city: runCity ?? actorFilters.city ?? null,
+    });
+    const actorInputIssues = validateLegacyActorInput(actorInput);
+    if (actorInputIssues.length > 0) {
+      const message = `Actor input is invalid: ${actorInputIssues.join("; ")}`;
+      await setJobStepStatus(supabase, jobId, "scrape", "failed", {
+        error: message,
+        actorInput,
+      });
+      await updateJob(supabase, jobId, {
+        status: "failed",
+        error: message,
+        finished_at: new Date().toISOString(),
+      });
+      return NextResponse.json({ error: message, actorInput }, { status: 422 });
     }
-
-    // Use specific sub-niche keywords when available — these produce far better
-    // results than broad categories like "B2B SaaS". Fall back to industry names
-    // only if the user didn't pick any sub-niches.
-    const industryKeywords: string[] = (icp.industry_keywords ?? []).filter(Boolean) as string[];
-    const companyKeywords: string[] =
-      industryKeywords.length > 0
-        ? industryKeywords
-        : [...(icp.industries ?? [])];
 
     console.log("[Run] ICP filters →", {
       industries: icp.industries,
-      industry_keywords: industryKeywords,
+      industry_keywords: icp.industry_keywords,
       job_titles: icp.job_titles,
       geography: icp.geography,
-      headcount_brackets: selectedHeadcountBrackets,
+      company_type: icp.company_type,
+      headcount_brackets: icp.headcount_brackets,
       revenue: `${icp.revenue_min ?? "any"}-${icp.revenue_max ?? "any"}`,
-      companyKeywords,
-      sizeFilter,
-      contactLocation,
+      actorOverrides: actorFilters,
+      actorInput,
     });
 
-    const fetchCount = job.requested_lead_count ?? job.batch_size ?? 100;
+    /* ---- Mark scrape step running ---- */
+    await setJobStepStatus(supabase, jobId, "scrape", "running");
+    await updateJob(supabase, jobId, {
+      status: "running",
+      progress_step: "scrape",
+      progress_percent: 5,
+      started_at: new Date().toISOString(),
+    });
 
     // Run the actor and fetch items in one go (matches reference pattern)
-    const result = await runActorAndFetchItems({
-      company_keywords:
-        companyKeywords.length > 0 ? companyKeywords : undefined,
-      contact_job_title:
-        icp.job_titles && icp.job_titles.length > 0
-          ? icp.job_titles
-          : undefined,
-      contact_location: contactLocation,
-      contact_city: contactCity,
-      size: sizeFilter.length > 0 ? sizeFilter : undefined,
-      email_status: ["validated"],
-      fetch_count: fetchCount,
-      file_name: "Prospects",
-    });
+    const result = await runActorAndFetchItems(actorInput);
 
     if (result.items.length === 0) {
       await setJobStepStatus(supabase, jobId, "scrape", "failed", {
@@ -199,6 +169,12 @@ export async function POST(request: Request) {
       scrapeComplete: true,
     });
   } catch (err) {
+    console.error("[Run] /api/jobs/run failed", {
+      jobId,
+      runCity,
+      error: serializeError(err),
+    });
+
     await setJobStepStatus(supabase, jobId, "scrape", "failed", {
       error: err instanceof Error ? err.message : "Apify run failed",
     });

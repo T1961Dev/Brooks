@@ -29,8 +29,15 @@ export async function POST(request: NextRequest) {
   const id = (body.id as string | undefined)?.trim();
   const name = (body.name as string | undefined)?.trim();
   const clientId = (body.client_id as string | undefined)?.trim();
+  const industries = (body.industries ?? []) as string[];
   if (!name) return NextResponse.json({ error: "name required" }, { status: 400 });
   if (!clientId) return NextResponse.json({ error: "client_id required" }, { status: 400 });
+  if (!Array.isArray(industries) || industries.length === 0) {
+    return NextResponse.json(
+      { error: "At least one company industry is required" },
+      { status: 400 }
+    );
+  }
 
   const payload = {
     user_id: user.id,
@@ -41,7 +48,7 @@ export async function POST(request: NextRequest) {
     revenue_min: body.revenue_min ?? null,
     revenue_max: body.revenue_max ?? null,
     job_titles: body.job_titles ?? [],
-    industries: body.industries ?? [],
+    industries,
     industry_keywords: body.industry_keywords ?? [],
     geography: body.geography ?? null,
     company_type: body.company_type ?? null,

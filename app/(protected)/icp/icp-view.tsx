@@ -32,7 +32,7 @@ import {
 } from "@/lib/icp-options";
 import {
   ChevronDown, X, Users, Building2, MapPin, Briefcase,
-  DollarSign, Cpu, Target, Crosshair, Plus, AlertCircle,
+  DollarSign, Cpu, Target, Crosshair, Plus, AlertCircle, Sparkles, Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -151,12 +151,19 @@ export function IcpView({
   const [revenueMin, setRevenueMin] = useState<string>("");
   const [revenueMax, setRevenueMax] = useState<string>("");
   const [jobTitleSet, setJobTitleSet] = useState<Set<string>>(new Set());
+  const [customJobTitle, setCustomJobTitle] = useState("");
   const [industrySet, setIndustrySet] = useState<Set<string>>(new Set());
   const [industryKeywordSet, setIndustryKeywordSet] = useState<Set<string>>(new Set());
   const [customKeyword, setCustomKeyword] = useState("");
+  const [keywordAiLoading, setKeywordAiLoading] = useState(false);
+  const [keywordAiPrompt, setKeywordAiPrompt] = useState("");
+  const [keywordAiSuggestions, setKeywordAiSuggestions] = useState<string[]>([]);
   const [geography, setGeography] = useState("");
   const [companyType, setCompanyType] = useState("");
   const [techSet, setTechSet] = useState<Set<string>>(new Set());
+  const [titleAiLoading, setTitleAiLoading] = useState(false);
+  const [titleAiPrompt, setTitleAiPrompt] = useState("");
+  const [titleAiSuggestions, setTitleAiSuggestions] = useState<string[]>([]);
 
   const toggleSet = (set: Set<string>, key: string) => {
     const next = new Set(set);
@@ -202,6 +209,63 @@ export function IcpView({
     setCustomKeyword("");
   };
 
+  const addCustomJobTitle = () => {
+    const trimmed = customJobTitle.trim();
+    if (!trimmed) return;
+    setJobTitleSet((s) => new Set(s).add(trimmed));
+    setCustomJobTitle("");
+  };
+
+  const suggestKeywordExpansions = async () => {
+    const value = customKeyword.trim();
+    if (!value) return;
+    setKeywordAiLoading(true);
+    try {
+      const res = await fetch("/api/ai/keyword-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: value, kind: "keyword" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate suggestions");
+      setKeywordAiPrompt(String(data.clarifyingPrompt ?? ""));
+      setKeywordAiSuggestions(
+        Array.isArray(data.suggestions) ? data.suggestions.map(String) : []
+      );
+    } catch (error) {
+      setKeywordAiPrompt("Could not generate AI suggestions right now.");
+      setKeywordAiSuggestions([]);
+      console.error("[ICP] keyword suggestions failed", error);
+    } finally {
+      setKeywordAiLoading(false);
+    }
+  };
+
+  const suggestTitleExpansions = async () => {
+    const value = customJobTitle.trim();
+    if (!value) return;
+    setTitleAiLoading(true);
+    try {
+      const res = await fetch("/api/ai/keyword-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: value, kind: "job_title" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate suggestions");
+      setTitleAiPrompt(String(data.clarifyingPrompt ?? ""));
+      setTitleAiSuggestions(
+        Array.isArray(data.suggestions) ? data.suggestions.map(String) : []
+      );
+    } catch (error) {
+      setTitleAiPrompt("Could not generate AI suggestions right now.");
+      setTitleAiSuggestions([]);
+      console.error("[ICP] title suggestions failed", error);
+    } finally {
+      setTitleAiLoading(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -220,6 +284,12 @@ export function IcpView({
         : null;
     const rbMin = revenueMin ? Number(revenueMin) : null;
     const rbMax = revenueMax ? Number(revenueMax) : null;
+    const finalIndustryKeywords = Array.from(
+      new Set([
+        ...Array.from(industryKeywordSet),
+        ...(customKeyword.trim() ? [customKeyword.trim()] : []),
+      ])
+    );
     try {
       const res = await fetch("/api/icp", {
         method: "POST",
@@ -234,7 +304,7 @@ export function IcpView({
           revenue_max: rbMax,
           job_titles: Array.from(jobTitleSet),
           industries: Array.from(industrySet),
-          industry_keywords: Array.from(industryKeywordSet),
+          industry_keywords: finalIndustryKeywords,
           geography: geography || null,
           company_type: companyType || null,
           technologies: Array.from(techSet),
@@ -247,12 +317,17 @@ export function IcpView({
       setRevenueMin("");
       setRevenueMax("");
       setJobTitleSet(new Set());
+      setCustomJobTitle("");
       setIndustrySet(new Set());
       setIndustryKeywordSet(new Set());
       setCustomKeyword("");
+      setKeywordAiPrompt("");
+      setKeywordAiSuggestions([]);
       setGeography("");
       setCompanyType("");
       setTechSet(new Set());
+      setTitleAiPrompt("");
+      setTitleAiSuggestions([]);
     } finally {
       setSaving(false);
     }
@@ -408,17 +483,17 @@ export function IcpView({
               <div className="space-y-2">
                 <Label className="text-sm font-medium flex items-center gap-2">
                   <Building2 className="h-4 w-4 text-muted-foreground" />
-                  Company Type
+                  Business Model
                 </Label>
                 <Select
                   value={companyType || "_any"}
                   onValueChange={(v) => setCompanyType(v === "_any" ? "" : v)}
                 >
                   <SelectTrigger className="h-11 rounded-lg bg-muted/50 border-border">
-                    <SelectValue placeholder="Any type" />
+                    <SelectValue placeholder="Any model" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="_any">Any type</SelectItem>
+                    <SelectItem value="_any">Any model</SelectItem>
                     {COMPANY_TYPES.map((t) => (
                       <SelectItem key={t} value={t}>
                         {t}
@@ -437,16 +512,79 @@ export function IcpView({
                 options={ICP_JOB_TITLES}
                 selected={jobTitleSet}
                 onToggle={(k) => setJobTitleSet((s) => toggleSet(s, k))}
-                description="Select decision-maker titles to target"
+                description="Select titles, plus add any free-text title below"
               />
+              <div className="ml-4 space-y-2 border-l-2 border-primary/20 pl-4">
+                <div className="flex gap-2">
+                  <Input
+                    value={customJobTitle}
+                    onChange={(e) => setCustomJobTitle(e.target.value)}
+                    placeholder="Add free-text contact job title (e.g. Managing Director)"
+                    className="h-9 rounded-lg bg-muted/50 border-border text-sm flex-1"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addCustomJobTitle();
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 px-3"
+                    onClick={addCustomJobTitle}
+                    disabled={!customJobTitle.trim()}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 px-3 gap-1.5"
+                    onClick={suggestTitleExpansions}
+                    disabled={!customJobTitle.trim() || titleAiLoading}
+                  >
+                    {titleAiLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    AI Expand
+                  </Button>
+                </div>
+                {(titleAiPrompt || titleAiSuggestions.length > 0) && (
+                  <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2">
+                    {titleAiPrompt && (
+                      <p className="text-xs text-muted-foreground">{titleAiPrompt}</p>
+                    )}
+                    {titleAiSuggestions.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {titleAiSuggestions.map((suggestion) => (
+                          <button
+                            key={suggestion}
+                            type="button"
+                            onClick={() => setJobTitleSet((s) => toggleSet(s, suggestion))}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-primary px-3 py-1.5 text-xs font-medium"
+                          >
+                            {suggestion}
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <ChipSelector
-                label="Industries"
+                label="Company Industries (Mandatory)"
                 icon={Building2}
                 options={ICP_INDUSTRIES}
                 selected={industrySet}
                 onToggle={handleIndustryToggle}
-                description="Select broad industry categories"
+                description="Select one or more Apollo default company_industry values"
               />
 
               {/* Sub-niche keyword picker — appears when industries are selected */}
@@ -473,10 +611,10 @@ export function IcpView({
                           </div>
                           <div>
                             <span className="font-medium text-foreground">
-                              Industry Sub-niches
+                              Apollo Industry Keywords
                             </span>
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              These keywords are sent to the lead scraper for precise targeting
+                              These are the exact `industryKeywords` sent to the Apollo actor
                             </p>
                           </div>
                         </div>
@@ -540,7 +678,61 @@ export function IcpView({
                         >
                           <Plus className="h-4 w-4" />
                         </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 px-3 gap-1.5"
+                          onClick={suggestKeywordExpansions}
+                          disabled={!customKeyword.trim() || keywordAiLoading}
+                        >
+                          {keywordAiLoading ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Sparkles className="h-4 w-4" />
+                          )}
+                          AI Expand
+                        </Button>
                       </div>
+                      {(keywordAiPrompt || keywordAiSuggestions.length > 0) && (
+                        <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2">
+                          {keywordAiPrompt && (
+                            <p className="text-xs text-muted-foreground">{keywordAiPrompt}</p>
+                          )}
+                          {keywordAiSuggestions.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {keywordAiSuggestions.map((suggestion) => (
+                                <button
+                                  key={suggestion}
+                                  type="button"
+                                  onClick={() =>
+                                    setIndustryKeywordSet((s) => toggleSet(s, suggestion))
+                                  }
+                                  className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-primary px-3 py-1.5 text-xs font-medium"
+                                >
+                                  {suggestion}
+                                  <Plus className="h-3 w-3" />
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setIndustryKeywordSet((prev) => {
+                                    const next = new Set(prev);
+                                    for (const suggestion of keywordAiSuggestions) {
+                                      next.add(suggestion);
+                                    }
+                                    return next;
+                                  })
+                                }
+                                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 text-emerald-400 px-3 py-1.5 text-xs font-medium"
+                              >
+                                Add all
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Show custom keywords that aren't from suggestions */}
                       {Array.from(industryKeywordSet).filter(
@@ -589,7 +781,7 @@ export function IcpView({
               </p>
               <Button
                 type="submit"
-                disabled={saving || !clientId || !name.trim()}
+                disabled={saving || !clientId || !name.trim() || industrySet.size === 0}
                 className="rounded-lg px-6"
               >
                 {saving ? "Saving..." : "Save ICP"}

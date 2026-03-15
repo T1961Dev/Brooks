@@ -4,29 +4,22 @@ import { ApifyClient } from "apify-client";
 /*  Types                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Field names match the actor's expected input EXACTLY:
- *   company_keywords  – industry / niche keywords
- *   contact_job_title – job titles to target
- *   contact_city      – city-level location (e.g. "London")
- *   contact_location  – country-level location (e.g. "united kingdom")
- *     ** NEVER put a country in contact_city or a city in contact_location **
- *   size              – company headcount brackets
- *   funding           – funding round types
- *   email_status      – e.g. ["validated"]
- *   fetch_count       – how many leads to scrape
- *   file_name         – dataset file tag
- */
 export interface ApifyRunInput {
+  company_domain?: string[];
+  company_industry?: string[];
   company_keywords?: string[];
   contact_job_title?: string[];
-  contact_city?: string[];
   contact_location?: string[];
-  size?: string[];
+  contact_not_city?: string[];
+  contact_not_location?: string[];
   funding?: string[];
+  city?: string;
   email_status?: string[];
   fetch_count?: number;
   file_name?: string;
+  min_revenue?: string;
+  max_revenue?: string;
+  size?: string[];
 }
 
 export interface ApifyRunResult {
@@ -95,7 +88,8 @@ function getClient(): ApifyClient {
 }
 
 /**
- * Map a headcount range (min/max) to the exact size brackets the actor expects.
+ * Map a headcount range (min/max) to the exact employee size buckets the new
+ * actor expects.
  */
 export function headcountToSizeFilter(
   min?: number | null,
@@ -103,19 +97,38 @@ export function headcountToSizeFilter(
 ): string[] {
   if (!min && !max) return [];
   const brackets = [
-    { label: "1-10", lo: 1, hi: 10 },
-    { label: "11-20", lo: 11, hi: 20 },
-    { label: "21-50", lo: 21, hi: 50 },
-    { label: "51-100", lo: 51, hi: 100 },
-    { label: "101-200", lo: 101, hi: 200 },
-    { label: "201-500", lo: 201, hi: 500 },
-    { label: "501-1000", lo: 501, hi: 1000 },
-    { label: "1001-2000", lo: 1001, hi: 2000 },
-    { label: "2001-5000", lo: 2001, hi: 5000 },
-    { label: "5001-10000", lo: 5001, hi: 10000 },
-    { label: "10001-20000", lo: 10001, hi: 20000 },
-    { label: "20001-50000", lo: 20001, hi: 50000 },
-    { label: "50000+", lo: 50001, hi: Infinity },
+    { label: "0 - 1", lo: 0, hi: 1 },
+    { label: "2 - 10", lo: 2, hi: 10 },
+    { label: "11 - 50", lo: 11, hi: 50 },
+    { label: "51 - 200", lo: 51, hi: 200 },
+    { label: "201 - 500", lo: 201, hi: 500 },
+    { label: "501 - 1000", lo: 501, hi: 1000 },
+    { label: "1001 - 5000", lo: 1001, hi: 5000 },
+    { label: "5001 - 10000", lo: 5001, hi: 10000 },
+    { label: "10000+", lo: 10001, hi: Infinity },
+  ];
+  const lo = min ?? 0;
+  const hi = max ?? Infinity;
+  return brackets
+    .filter((b) => b.lo <= hi && b.hi >= lo)
+    .map((b) => b.label);
+}
+
+/**
+ * Map a revenue min/max range to the actor's revenue buckets.
+ */
+export function revenueToActorFilter(
+  min?: number | null,
+  max?: number | null
+): string[] {
+  if (!min && !max) return [];
+  const brackets = [
+    { label: "< 1M", lo: 0, hi: 1_000_000 },
+    { label: "1M-10M", lo: 1_000_000, hi: 10_000_000 },
+    { label: "11M-100M", lo: 10_000_000, hi: 100_000_000 },
+    { label: "101M-500M", lo: 100_000_000, hi: 500_000_000 },
+    { label: "501M-1B", lo: 500_000_000, hi: 1_000_000_000 },
+    { label: "1B+", lo: 1_000_000_000, hi: Infinity },
   ];
   const lo = min ?? 0;
   const hi = max ?? Infinity;
@@ -210,6 +223,231 @@ export const INDUSTRY_ALIASES: Record<string, string[]> = {
   ],
 };
 
+function getRecordValue(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): unknown {
+  for (const key of keys) {
+    if (record[key] != null) return record[key];
+  }
+  return undefined;
+}
+
+function asString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function firstEmailFromField(value: unknown): string | null {
+  const text = asString(value);
+  if (!text) return null;
+  const first = text
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .find(Boolean);
+  return first ?? null;
+}
+
+function parseEmployeeSize(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = asString(value);
+  if (!text) return null;
+  const normalized = text.replace(/,/g, "").trim();
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  if (normalized.includes("+")) {
+    const base = Number(normalized.replace(/[^\d]/g, ""));
+    return Number.isFinite(base) ? base : null;
+  }
+  const matches = normalized.match(/\d+/g);
+  if (!matches?.length) return null;
+  if (matches.length === 1) return Number(matches[0]);
+  const lo = Number(matches[0]);
+  const hi = Number(matches[1]);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  return Math.round((lo + hi) / 2);
+}
+
+function deriveDomain(value: string | null): string | null {
+  if (!value) return null;
+  return value
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/.*$/, "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeDatasetItem(raw: unknown): ApifyDatasetItem {
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+
+  const companyWebsite = asString(
+    getRecordValue(
+      record,
+      "company_website",
+      "companyWebsite",
+      "website",
+      "organizationWebsite"
+    )
+  );
+  const companyDomain =
+    asString(getRecordValue(record, "company_domain", "companyDomain", "domain")) ??
+    deriveDomain(companyWebsite);
+
+  return {
+    first_name: asString(getRecordValue(record, "first_name", "firstName")),
+    last_name: asString(getRecordValue(record, "last_name", "lastName")),
+    full_name: asString(
+      getRecordValue(record, "full_name", "fullName", "name", "personName", "fullName")
+    ),
+    email: firstEmailFromField(
+      getRecordValue(record, "email", "workEmail", "emailAddress", "work_email")
+    ),
+    mobile_number: asString(
+      getRecordValue(
+        record,
+        "mobile_number",
+        "mobileNumber",
+        "phone",
+        "phoneNumber",
+        "phone_numbers"
+      )
+    ),
+    personal_email: asString(
+      getRecordValue(record, "personal_email", "personalEmail")
+    ),
+    company_name: asString(
+      getRecordValue(record, "company_name", "companyName", "organizationName")
+    ),
+    company_website: companyWebsite,
+    linkedin: asString(
+      getRecordValue(record, "linkedin", "linkedinUrl", "personLinkedinUrl")
+    ),
+    job_title: asString(
+      getRecordValue(
+        record,
+        "job_title",
+        "jobTitle",
+        "title",
+        "position",
+        "role"
+      )
+    ),
+    industry: asString(
+      getRecordValue(
+        record,
+        "industry",
+        "companyIndustry",
+        "company_industry",
+        "companyCategory",
+        "organizationIndustry"
+      )
+    ),
+    headline: asString(getRecordValue(record, "headline", "personHeadline")),
+    seniority_level: asString(
+      getRecordValue(record, "seniority_level", "seniorityLevel", "seniority")
+    ),
+    company_linkedin: asString(
+      getRecordValue(
+        record,
+        "company_linkedin",
+        "companyLinkedin",
+        "companyLinkedinUrl",
+        "organizationLinkedinUrl"
+      )
+    ),
+    functional_level: asString(
+      getRecordValue(record, "functional_level", "functionalLevel", "functional")
+    ),
+    company_size: parseEmployeeSize(
+      getRecordValue(
+        record,
+        "company_size",
+        "companyEmployeeSize",
+        "employeeSize",
+        "organizationSize"
+      )
+    ),
+    city: asString(
+      getRecordValue(record, "city", "personCity", "companyCity", "organizationCity")
+    ),
+    state: asString(
+      getRecordValue(record, "state", "personState", "companyState", "organizationState")
+    ),
+    country: asString(
+      getRecordValue(record, "country", "personCountry", "companyCountry", "organizationCountry")
+    ),
+    company_annual_revenue: asString(
+      getRecordValue(record, "company_annual_revenue", "companyRevenue", "revenue")
+    ),
+    company_annual_revenue_clean: asString(
+      getRecordValue(
+        record,
+        "company_annual_revenue_clean",
+        "companyRevenueClean",
+        "revenue"
+      )
+    ),
+    company_description: asString(
+      getRecordValue(
+        record,
+        "company_description",
+        "companyDescription",
+        "description",
+        "organizationDescription"
+      )
+    ),
+    company_total_funding: asString(
+      getRecordValue(record, "company_total_funding", "companyTotalFunding")
+    ),
+    company_total_funding_clean: asString(
+      getRecordValue(record, "company_total_funding_clean", "companyTotalFundingClean")
+    ),
+    keywords: asString(
+      getRecordValue(record, "keywords", "industryKeywords", "organizationSpecialities")
+    ),
+    company_technologies: asString(
+      getRecordValue(record, "company_technologies", "companyTechnologies")
+    ),
+    company_linkedin_uid: asString(
+      getRecordValue(record, "company_linkedin_uid", "companyLinkedinUid")
+    ),
+    company_founded_year: asString(
+      getRecordValue(record, "company_founded_year", "companyFoundedYear")
+    ),
+    company_domain: companyDomain,
+    company_phone: asString(
+      getRecordValue(record, "company_phone", "companyPhone", "phone")
+    ),
+    company_street_address: asString(
+      getRecordValue(record, "company_street_address", "companyStreetAddress")
+    ),
+    company_full_address: asString(
+      getRecordValue(record, "company_full_address", "companyFullAddress")
+    ),
+    company_state: asString(
+      getRecordValue(record, "company_state", "companyState", "organizationState")
+    ),
+    company_city: asString(
+      getRecordValue(record, "company_city", "companyCity", "organizationCity")
+    ),
+    company_country: asString(
+      getRecordValue(record, "company_country", "companyCountry", "organizationCountry")
+    ),
+    company_postal_code: asString(
+      getRecordValue(record, "company_postal_code", "companyPostalCode")
+    ),
+    ...record,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Public API                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -251,31 +489,24 @@ export async function runActorAndFetchItems(
   }
 
   const client = getClient();
-
   const actorInput: Record<string, unknown> = {
     fetch_count: input.fetch_count ?? 100,
     file_name: input.file_name ?? "Prospects",
-    email_status: input.email_status ?? ["validated"],
+    email_status: input.email_status?.length ? input.email_status : ["validated"],
   };
 
-  if (input.company_keywords?.length) {
-    actorInput.company_keywords = input.company_keywords;
-  }
-  if (input.contact_job_title?.length) {
-    actorInput.contact_job_title = input.contact_job_title;
-  }
-  if (input.contact_city?.length) {
-    actorInput.contact_city = input.contact_city;
-  }
-  if (input.contact_location?.length) {
-    actorInput.contact_location = input.contact_location;
-  }
-  if (input.size?.length) {
-    actorInput.size = input.size;
-  }
-  if (input.funding?.length) {
-    actorInput.funding = input.funding;
-  }
+  if (input.company_keywords?.length) actorInput.company_keywords = input.company_keywords;
+  if (input.company_domain?.length) actorInput.company_domain = input.company_domain;
+  if (input.company_industry?.length) actorInput.company_industry = input.company_industry;
+  if (input.contact_job_title?.length) actorInput.contact_job_title = input.contact_job_title;
+  if (input.contact_location?.length) actorInput.contact_location = input.contact_location;
+  if (input.contact_not_city?.length) actorInput.contact_not_city = input.contact_not_city;
+  if (input.contact_not_location?.length) actorInput.contact_not_location = input.contact_not_location;
+  if (input.funding?.length) actorInput.funding = input.funding;
+  if (input.city) actorInput.city = input.city;
+  if (input.min_revenue) actorInput.min_revenue = input.min_revenue;
+  if (input.max_revenue) actorInput.max_revenue = input.max_revenue;
+  if (input.size?.length) actorInput.size = input.size;
 
   console.log("[Apify] Starting actor with input:", JSON.stringify(actorInput));
 
@@ -295,14 +526,16 @@ export async function runActorAndFetchItems(
   }
 
   // Step 2: Immediately fetch results from the dataset (same pattern as reference)
-  const { items } = await client
-    .dataset(run.defaultDatasetId)
-    .listItems();
+  const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
-  console.log(`[Apify] Fetched ${items.length} items from dataset ${run.defaultDatasetId}`);
+  const normalizedItems = items.map(normalizeDatasetItem);
 
-  if (items.length > 0) {
-    const sample = items[0] as ApifyDatasetItem;
+  console.log(
+    `[Apify] Fetched ${normalizedItems.length} items from dataset ${run.defaultDatasetId}`
+  );
+
+  if (normalizedItems.length > 0) {
+    const sample = normalizedItems[0];
     console.log("[Apify] Sample item fields:", {
       industry: sample.industry,
       job_title: sample.job_title,
@@ -316,7 +549,7 @@ export async function runActorAndFetchItems(
     runId: run.id,
     status: run.status ?? "SUCCEEDED",
     datasetId: run.defaultDatasetId,
-    items: items as ApifyDatasetItem[],
+    items: normalizedItems,
   };
 }
 
@@ -375,5 +608,5 @@ export async function getApifyDatasetItems(
   console.log("[Apify] Fetching dataset items:", datasetId);
   const { items } = await client.dataset(datasetId).listItems();
   console.log("[Apify] Got", items.length, "items from dataset");
-  return items as ApifyDatasetItem[];
+  return items.map(normalizeDatasetItem);
 }

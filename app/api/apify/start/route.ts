@@ -24,8 +24,8 @@ export async function POST() {
   try {
     const result = await runActorAndFetchItems({
       fetch_count: 100,
-      email_status: ["validated"],
       file_name: "Prospects",
+      email_status: ["validated"],
     });
 
     await admin.from("apify_runs").insert({

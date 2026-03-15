@@ -14,7 +14,9 @@ export default async function JobsPage() {
     .order("created_at", { ascending: false });
   const { data: icps } = await supabase
     .from("icp_profiles")
-    .select("id, name, client_id")
+    .select(
+      "id, name, client_id, headcount_brackets, headcount_min, headcount_max, revenue_min, revenue_max, job_titles, industries, industry_keywords, geography, company_type, technologies"
+    )
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
   let jobsQuery = supabase

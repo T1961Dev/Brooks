@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { formatIcpSummary, type IcpForSummary } from "@/lib/icp-summary";
+import { buildLegacyActorInput } from "@/lib/integrations/apify-mapping";
 import {
   Select,
   SelectContent,
@@ -39,7 +41,9 @@ import {
   Upload,
 } from "lucide-react";
 
-type IcpOption = { id: string; name: string; client_id: string | null };
+type IcpOption = IcpForSummary & {
+  id: string;
+};
 type Client = { id: string; name: string };
 type JobRow = {
   id: string;
@@ -58,6 +62,34 @@ type JobRow = {
   error: string | null;
 };
 type Campaign = { id: string; name: string; status: string };
+
+const EMAIL_STATUS_OPTIONS = ["validated", "not_validated", "unknown"] as const;
+const FUNDING_OPTIONS = [
+  "seed",
+  "angel",
+  "series_a",
+  "series_b",
+  "series_c",
+  "series_d",
+  "series_e",
+  "series_f",
+  "venture_round",
+  "debt_financing",
+  "convertible_note",
+  "private_equity_round",
+  "other_round",
+] as const;
+
+function parseCsvList(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Pipeline step definitions                                                  */
@@ -469,6 +501,21 @@ export function JobsView({
   const [icpId, setIcpId] = useState(filteredIcps[0]?.id ?? "");
   const [batchSize, setBatchSize] = useState("200");
   const [leadsPerBatch, setLeadsPerBatch] = useState("100");
+  const [city, setCity] = useState("");
+  const [companyDomainInput, setCompanyDomainInput] = useState("");
+  const [companyIndustryInput, setCompanyIndustryInput] = useState("");
+  const [companyKeywordInput, setCompanyKeywordInput] = useState("");
+  const [jobTitleInput, setJobTitleInput] = useState("");
+  const [contactLocationInput, setContactLocationInput] = useState("");
+  const [contactNotCityInput, setContactNotCityInput] = useState("");
+  const [contactNotLocationInput, setContactNotLocationInput] = useState("");
+  const [sizeInput, setSizeInput] = useState("");
+  const [minRevenueInput, setMinRevenueInput] = useState("");
+  const [maxRevenueInput, setMaxRevenueInput] = useState("");
+  const [emailStatusSet, setEmailStatusSet] = useState<Set<string>>(
+    new Set(["validated"])
+  );
+  const [fundingSet, setFundingSet] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [marketSizeEstimate, setMarketSizeEstimate] = useState<number | null>(
     null
@@ -478,7 +525,9 @@ export function JobsView({
     matchingCompanies: number;
     contactsPerCompany: number;
     totalContacts: number;
+    reachableContacts?: number;
     withValidEmail: number;
+    actorFilters?: Record<string, unknown>;
   } | null>(null);
   const [marketSizeChecked, setMarketSizeChecked] = useState(false);
   const [checkingMarket, setCheckingMarket] = useState(false);
@@ -493,6 +542,48 @@ export function JobsView({
     marketSizeEstimate != null
       ? Math.min(Number(batchSize) || 0, marketSizeEstimate)
       : Number(batchSize) || 0;
+  const selectedIcp = filteredIcps.find((icp) => icp.id === icpId);
+  const actorFilters = useMemo(
+    () => ({
+      city: city.trim() || null,
+      company_domain: parseCsvList(companyDomainInput),
+      company_industry: parseCsvList(companyIndustryInput),
+      company_keywords: parseCsvList(companyKeywordInput),
+      contact_job_title: parseCsvList(jobTitleInput),
+      contact_location: parseCsvList(contactLocationInput).map((value) =>
+        value.toLowerCase()
+      ),
+      contact_not_city: parseCsvList(contactNotCityInput),
+      contact_not_location: parseCsvList(contactNotLocationInput).map((value) =>
+        value.toLowerCase()
+      ),
+      email_status: Array.from(emailStatusSet),
+      funding: Array.from(fundingSet),
+      min_revenue: minRevenueInput.trim() || null,
+      max_revenue: maxRevenueInput.trim() || null,
+      size: parseCsvList(sizeInput),
+    }),
+    [
+      city,
+      companyDomainInput,
+      companyIndustryInput,
+      companyKeywordInput,
+      jobTitleInput,
+      contactLocationInput,
+      contactNotCityInput,
+      contactNotLocationInput,
+      emailStatusSet,
+      fundingSet,
+      minRevenueInput,
+      maxRevenueInput,
+      sizeInput,
+    ]
+  );
+  const actorInputPreview = selectedIcp
+    ? buildLegacyActorInput(selectedIcp, Math.max(1, Number(batchSize) || 100), {
+        ...actorFilters,
+      })
+    : null;
 
   // Merge server-side jobs with live-polled updates
   const allJobs: JobRow[] = initialJobs.map((job) => {
@@ -665,6 +756,27 @@ export function JobsView({
     }
   };
 
+  const toggleEmailStatus = (status: string) => {
+    setEmailStatusSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) {
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  };
+
+  const toggleFunding = (round: string) => {
+    setFundingSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(round)) next.delete(round);
+      else next.add(round);
+      return next;
+    });
+  };
+
   /* ---- Create & run a job ---- */
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -685,6 +797,7 @@ export function JobsView({
           requestedLeadCount: requested,
           leadsPerBatch: Number(leadsPerBatch) || 100,
           source: "apify",
+          actorFilters,
         }),
       });
       const createData = await createRes.json();
@@ -723,7 +836,7 @@ export function JobsView({
       const runRes = await fetch("/api/jobs/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId }),
+        body: JSON.stringify({ jobId, city: city.trim() || null, actorFilters }),
       });
       const runData = await runRes.json();
       if (!runRes.ok) {
@@ -830,6 +943,255 @@ export function JobsView({
                 </Select>
               )}
             </div>
+            {selectedIcp && actorInputPreview && (
+              <div className="md:col-span-2 rounded-lg border border-border bg-muted/40 p-3 space-y-2">
+                <p className="text-xs font-medium text-foreground">
+                  Actor input preview
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatIcpSummary(selectedIcp, null)}
+                </p>
+                <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
+                  <span>
+                    company_domain:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.company_domain ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    contact_job_title:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.contact_job_title ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    company_industry:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.company_industry ?? []).join(", ") || "Required"}
+                    </span>
+                  </span>
+                  <span>
+                    company_keywords:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.company_keywords ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    size:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.size ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    revenue:{" "}
+                    <span className="text-foreground">
+                      {`${actorInputPreview.min_revenue ?? "Any"} - ${actorInputPreview.max_revenue ?? "Any"}`}
+                    </span>
+                  </span>
+                  <span>
+                    contact_location:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.contact_location ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    contact_not_city:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.contact_not_city ?? []).join(", ") || "None"}
+                    </span>
+                  </span>
+                  <span>
+                    contact_not_location:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.contact_not_location ?? []).join(", ") || "None"}
+                    </span>
+                  </span>
+                  <span>
+                    city: <span className="text-foreground">{actorInputPreview.city ?? "None"}</span>
+                  </span>
+                  <span>
+                    funding:{" "}
+                    <span className="text-foreground">
+                      {(actorInputPreview.funding ?? []).join(", ") || "Any"}
+                    </span>
+                  </span>
+                  <span>
+                    email_status:{" "}
+                    <span className="text-foreground">
+                      {actorInputPreview.email_status.join(", ")}
+                    </span>
+                  </span>
+                  <span>
+                    fetch_count:{" "}
+                    <span className="text-foreground">{actorInputPreview.fetch_count}</span>
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="md:col-span-2 rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+              <p className="text-xs font-medium text-foreground">Location vs City</p>
+              <p className="text-xs text-muted-foreground">
+                Select a region/country/state in ICP location. If you want a specific city,
+                leave location broad and enter city below. Do not mix regions + countries +
+                city in one run.
+              </p>
+              <Input
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="Optional city override (e.g. London)"
+                className="rounded-lg bg-muted/50 border-border"
+              />
+            </div>
+
+            <div className="md:col-span-2 rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+              <p className="text-xs font-medium text-foreground">
+                Lead Filters (Actor overrides)
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Optional per-run overrides. Use comma-separated values to mirror
+                actor filters exactly.
+              </p>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Company Website / Domain</Label>
+                  <Input
+                    value={companyDomainInput}
+                    onChange={(e) => setCompanyDomainInput(e.target.value)}
+                    placeholder="google.com, hubspot.com"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Industry (include)</Label>
+                  <Input
+                    value={companyIndustryInput}
+                    onChange={(e) => setCompanyIndustryInput(e.target.value)}
+                    placeholder="computer software, internet"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Keywords</Label>
+                  <Input
+                    value={companyKeywordInput}
+                    onChange={(e) => setCompanyKeywordInput(e.target.value)}
+                    placeholder="CRM, SaaS, customer relationship management platform"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Job Title</Label>
+                  <Input
+                    value={jobTitleInput}
+                    onChange={(e) => setJobTitleInput(e.target.value)}
+                    placeholder="CEO, Founder, Owner, Managing Director"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Location (include)</Label>
+                  <Input
+                    value={contactLocationInput}
+                    onChange={(e) => setContactLocationInput(e.target.value)}
+                    placeholder="united states, canada"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Location (exclude)</Label>
+                  <Input
+                    value={contactNotLocationInput}
+                    onChange={(e) => setContactNotLocationInput(e.target.value)}
+                    placeholder="germany, united kingdom"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">City (exclude)</Label>
+                  <Input
+                    value={contactNotCityInput}
+                    onChange={(e) => setContactNotCityInput(e.target.value)}
+                    placeholder="Hamburg, Berlin"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Size</Label>
+                  <Input
+                    value={sizeInput}
+                    onChange={(e) => setSizeInput(e.target.value)}
+                    placeholder="11-20, 21-50"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Min revenue</Label>
+                  <Input
+                    value={minRevenueInput}
+                    onChange={(e) => setMinRevenueInput(e.target.value)}
+                    placeholder="100K"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Max revenue</Label>
+                  <Input
+                    value={maxRevenueInput}
+                    onChange={(e) => setMaxRevenueInput(e.target.value)}
+                    placeholder="1M"
+                    className="rounded-lg bg-muted/50 border-border"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Email Status</Label>
+                <div className="flex flex-wrap gap-2">
+                  {EMAIL_STATUS_OPTIONS.map((status) => {
+                    const selected = emailStatusSet.has(status);
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => toggleEmailStatus(status)}
+                        className={
+                          selected
+                            ? "rounded-full px-3 py-1 text-xs bg-primary text-primary-foreground"
+                            : "rounded-full px-3 py-1 text-xs bg-muted text-muted-foreground border border-border"
+                        }
+                      >
+                        {status}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Funding</Label>
+                <div className="flex flex-wrap gap-2">
+                  {FUNDING_OPTIONS.map((round) => {
+                    const selected = fundingSet.has(round);
+                    return (
+                      <button
+                        key={round}
+                        type="button"
+                        onClick={() => toggleFunding(round)}
+                        className={
+                          selected
+                            ? "rounded-full px-3 py-1 text-xs bg-primary text-primary-foreground"
+                            : "rounded-full px-3 py-1 text-xs bg-muted text-muted-foreground border border-border"
+                        }
+                      >
+                        {round}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
 
             {/* Counts */}
             <div className="space-y-2">
@@ -901,6 +1263,12 @@ export function JobsView({
                       <span className="text-foreground">~{marketBreakdown.contactsPerCompany}</span>
                       <span>Total contacts</span>
                       <span className="text-foreground">~{marketBreakdown.totalContacts.toLocaleString()}</span>
+                      {marketBreakdown.reachableContacts != null && (
+                        <>
+                          <span>Reachable contacts</span>
+                          <span className="text-foreground">~{marketBreakdown.reachableContacts.toLocaleString()}</span>
+                        </>
+                      )}
                       <span>With valid email</span>
                       <span className="text-foreground font-medium">~{marketBreakdown.withValidEmail.toLocaleString()}</span>
                     </div>
